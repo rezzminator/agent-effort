@@ -20,7 +20,7 @@ that sub-agent's reasoning effort. `README.md` is the behavioural spec.
 - A new behaviour lands in `plugins/agent-effort/src/` as a pure function with a test watched failing first; the adapter only wires it.
 - An error never holds a spawn or a request: log it with context and let it through at the effort it already had.
 - A malformed tag refuses the spawn with a message naming the valid levels; it is never silently dropped.
-- A version bump moves `plugins/agent-effort/.claude-plugin/plugin.json`, `marketplace.json`, `package.json` and the README badge together; installed copies update only on a new version.
+- A version bump moves `plugins/agent-effort/.claude-plugin/plugin.json`, `marketplace.json`, `package.json`, `package-lock.json` and the README badge together; installed copies update only on a new version.
 - Public repo: no machine-absolute paths, personal data or private project names in a tracked file.
 - `$` is passed only to functions declared at the top level of the hooks file and always spelled `$.noun.event(...)`: Claude Code checks this statically and otherwise loads the module with zero hooks. `npm run validate:plugin` catches it.
 

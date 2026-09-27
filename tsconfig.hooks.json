@@ -16,5 +16,5 @@
       "claude-code": ["./types/claude-code.d.ts"]
     }
   },
-  "include": ["plugins/agent-effort/hooks", "plugins/agent-effort/src", "types"]
+  "include": ["plugins/agent-effort/hooks", "plugins/agent-effort/src", "plugins/agent-effort/contract.d.ts", "types"]
 }

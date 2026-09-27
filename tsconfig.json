@@ -1,7 +1,9 @@
 {
   "compilerOptions": {
     "target": "es2023",
-    "lib": ["es2023"],
+    "lib": [
+      "es2023"
+    ],
     "module": "esnext",
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
@@ -9,7 +11,18 @@
     "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "paths": {
+      "claude-code": [
+        "./types/claude-code.d.ts"
+      ]
+    }
   },
-  "include": ["plugins/agent-effort/src", "tests"]
+  "include": [
+    "plugins/agent-effort/src",
+    "plugins/agent-effort/contract.d.ts",
+    "tests"
+  ]
 }
