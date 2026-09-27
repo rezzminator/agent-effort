@@ -10,6 +10,9 @@ Every release of agent-effort. Versions follow [semantic versioning](https://sem
 - Every sub-agent is pinned: an untagged one runs at the effort of its first request, so a mid-run `/effort` change never reaches it. A pin clears when the sub-agent finishes; a run that ends while it still waits on its own background task keeps it.
 - A prompt that is only an effort tag is refused.
 
+### Known limits
+- The agent panel's progress summary (`agent_summary`, a short request about every 30 seconds per background sub-agent) passes through no plugin hook and runs at the session's effort.
+
 ### Fixed
 - A sub-agent's first request waits only for its own spawn, not every spawn in flight, and its log no longer misreports the effort sent.
 - A loop no spawn names (compaction and memory forks) waits at most once instead of on every request during fan-out.

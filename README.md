@@ -60,6 +60,7 @@ The Agent tool's description now tells the model about the tag, so no prompt cha
 - The sub-agent reads its prompt without the tag. A prompt that is only a tag is refused.
 - Pins are held by Claude Code for the session and survive a plugin reload. A sub-agent resumed in a new session runs unpinned, at its own effort.
 - A model that takes no effort setting (such as Haiku) is sent none, whatever the tag says.
+- The agent panel's progress line for a background sub-agent comes from a separate short request Claude Code sends about every 30 seconds (`agent_summary`). It passes through no plugin hook, so it runs at the session's effort. The sub-agent's own requests are pinned.
 - Only sub-agents are affected. The main chat keeps `/effort`.
 
 ## ❓ FAQ
