@@ -1,5 +1,5 @@
 import { describe as suite, expect, it } from 'vitest';
-import { DESCRIBE_LINE, EffortBook, LEVELS, denyText, describe, firstPrompt, parseTag } from '../plugins/agent-effort/src/effort.ts';
+import { DESCRIBE_LINE, EffortBook, LEVELS, denyText, describe, parseTag, stripTag } from '../plugins/agent-effort/src/effort.ts';
 
 suite('parseTag', () => {
   it.each(LEVELS)('reads [effort: %s] at the start of the prompt', (level) => {
@@ -66,17 +66,20 @@ suite('EffortBook', () => {
   });
 });
 
-suite('firstPrompt', () => {
-  it('returns the first user message', () => {
-    const messages = [
-      { role: 'user', text: '[effort: low] go' },
-      { role: 'assistant', text: 'ok' },
-      { role: 'user', text: 'later' },
-    ];
-    expect(firstPrompt(messages)).toBe('[effort: low] go');
+suite('stripTag', () => {
+  it('removes the tag and the line break after it', () => {
+    expect(stripTag('[effort: low]\nMap the callers of X.')).toBe('Map the callers of X.');
   });
 
-  it('returns undefined before any user message', () => {
-    expect(firstPrompt([])).toBeUndefined();
+  it('removes a tag written on the same line as the task, with its spaces', () => {
+    expect(stripTag('  [Effort: XHigh]   Map X.')).toBe('Map X.');
+  });
+
+  it('keeps a tag that is not the first thing in the prompt', () => {
+    expect(stripTag('Map X. [effort: high]')).toBe('Map X. [effort: high]');
+  });
+
+  it('returns an untagged prompt unchanged', () => {
+    expect(stripTag('Map X.')).toBe('Map X.');
   });
 });

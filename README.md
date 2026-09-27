@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-0.1.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-17%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-19%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -49,21 +49,21 @@ The Agent tool's description now tells the model about the tag, so no prompt cha
 | Hook | What it does |
 | --- | --- |
 | `tool.describe` | Appends the tag's usage to the Agent tool's description. |
-| `agent.spawn` | Reads the tag at the very start of the prompt. An unknown level refuses the spawn, and the model sees why. A valid tag is recorded against the new sub-agent's id. |
+| `agent.spawn` | Reads the tag at the very start of the prompt. An unknown level refuses the spawn, and the model sees why. A valid tag is removed from the prompt, so the sub-agent never sees it, and recorded against the new sub-agent's id. |
 | `turn.step` | Before each of that sub-agent's model requests, sets the request's `effort` to the tagged level. |
 
 - The tag counts only as the prompt's first non-blank text. `[effort: high]` later in the prompt is ordinary prose.
 - Levels are case-insensitive: `low`, `medium`, `high`, `xhigh`, `max`.
 - Without a tag, nothing changes: the agent's frontmatter `effort:` applies, else the session's.
-- The tag stays in the prompt the sub-agent reads. A sub-agent the plugin did not see spawn (a resumed session, a continued agent) has its effort re-read from its own first message.
+- The sub-agent reads its prompt without the tag. Effort lives in memory for the session, so a sub-agent resumed in a new session runs at its own effort.
 - A model that takes no effort setting (such as Haiku) is sent none, whatever the tag says.
 - Only sub-agents are affected. The main chat keeps `/effort`.
 
 ## ❓ FAQ
 
-**Does it cost anything when unused?** No. An untagged spawn passes straight through, and each sub-agent's first message is read at most once.
+**Does it cost anything when unused?** No. An untagged spawn passes straight through; a request waits only when its sub-agent's spawn is still returning.
 
-**Does it survive compaction?** Yes. Effort is recorded per sub-agent id when it spawns, not re-read from the transcript.
+**Does it survive compaction?** Yes. Effort is recorded per sub-agent id when it spawns, not read from the transcript.
 
 **Can the main chat set its own effort this way?** No; use `/effort`.
 

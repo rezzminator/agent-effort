@@ -8,5 +8,6 @@ Every release of agent-effort. Versions follow [semantic versioning](https://sem
 
 ### Added
 - `[effort: low|medium|high|xhigh|max]` at the start of an Agent prompt sets that sub-agent's effort for every model request it makes.
+- The tag is removed from the prompt before the sub-agent reads it.
 - An unknown level refuses the spawn with a message naming the valid levels.
 - The Agent tool's description teaches the tag.

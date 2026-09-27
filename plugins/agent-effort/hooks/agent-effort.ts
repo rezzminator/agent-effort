@@ -1,5 +1,5 @@
 import type { EngineInterface, On, Register } from 'claude-code';
-import { describe, denyText, EffortBook, firstPrompt, parseTag } from '../src/effort.ts';
+import { describe, denyText, EffortBook, parseTag, stripTag } from '../src/effort.ts';
 
 // Thin adapter: every decision lives in src/effort.ts. A failure is logged with
 // its context and the request goes through at the effort it already had.
@@ -7,27 +7,23 @@ import { describe, denyText, EffortBook, firstPrompt, parseTag } from '../src/ef
 /** The spawning tool's name, past and present. */
 const AGENT_TOOLS = new Set(['Agent', 'Task']);
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+/** How long a sub-agent's first request waits for its spawn to return its id. */
+const SPAWN_WAIT_MS = 5000;
 
-// A sub-agent this session never saw spawn (resumed, or its first request raced
-// the spawn's return) is read once from its own first message; the tag stays in
-// the prompt so this read finds it.
-async function lookup(book: EffortBook, $: EngineInterface, agentId: string): Promise<void> {
-  const found = await $.session.messages({ agentId });
-  if ('deny' in found) {
-    $.ui.log(`agent-effort: reading sub-agent ${agentId}'s messages was refused: ${String(found.deny)}; its effort is left as it is`);
-    book.record(agentId, { kind: 'none' });
-    return;
+// A sub-agent's first request can start before agent.spawn returns its id, so
+// an unknown id waits for the spawns still in flight, never past SPAWN_WAIT_MS.
+async function settle(book: EffortBook, $: EngineInterface, agentId: string, inFlight: Set<Promise<unknown>>): Promise<void> {
+  if (book.has(agentId) || inFlight.size === 0) return;
+  const done = Promise.allSettled([...inFlight]).then(() => true);
+  const timedOut = $.clock.sleep(SPAWN_WAIT_MS).then(() => false);
+  if (!(await Promise.race([done, timedOut]))) {
+    $.ui.log(`agent-effort: sub-agent ${agentId}'s first request waited ${SPAWN_WAIT_MS}ms for its spawn to return; it runs at the effort it already had`);
   }
-  const prompt = firstPrompt(found);
-  if (prompt === undefined) return; // no user message yet: read again on the next step
-  book.record(agentId, parseTag(prompt));
 }
 
 export const register: Register = (on: On) => {
   const book = new EffortBook();
+  const inFlight = new Set<Promise<unknown>>();
 
   on('tool.describe', async ($, e, next) => {
     const result = await next(e);
@@ -38,18 +34,24 @@ export const register: Register = (on: On) => {
   on('agent.spawn', async ($, e, next) => {
     const tag = parseTag(e.prompt);
     if (tag.kind === 'bad') return { deny: denyText(tag.raw) };
-    const result = await next(e);
-    if (result.agentId !== undefined) book.record(result.agentId, tag);
-    return result;
+    const spawning = next(tag.kind === 'ok' ? { ...e, prompt: stripTag(e.prompt) } : e);
+    inFlight.add(spawning);
+    try {
+      const result = await spawning;
+      if (result.agentId !== undefined) book.record(result.agentId, tag);
+      return result;
+    } finally {
+      inFlight.delete(spawning);
+    }
   });
 
   on('turn.step', async function* ($, e, next) {
     const agentId = e.agentId;
     if (agentId === undefined) return yield* next(e);
     try {
-      if (!book.has(agentId)) await lookup(book, $, agentId);
+      await settle(book, $, agentId, inFlight);
     } catch (error) {
-      $.ui.log(`agent-effort: reading sub-agent ${agentId}'s prompt failed: ${message(error)}; its effort is left as it is`);
+      $.ui.log(`agent-effort: waiting on sub-agent ${agentId}'s spawn failed: ${error instanceof Error ? error.message : String(error)}; its effort is left as it is`);
     }
     const effort = book.get(agentId);
     return yield* next(effort === undefined || effort === e.effort ? e : { ...e, effort });

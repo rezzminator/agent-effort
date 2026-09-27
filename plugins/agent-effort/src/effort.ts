@@ -25,6 +25,12 @@ export function parseTag(prompt: string): Tag {
   return isEffort(level) ? { kind: 'ok', effort: level } : { kind: 'bad', raw };
 }
 
+/** The prompt without its leading tag, as the sub-agent reads it. */
+export function stripTag(prompt: string): string {
+  const match = TAG.exec(prompt);
+  return match ? prompt.slice(match[0].length).replace(/^[^\S\n]*\n?[^\S\n]*/, '') : prompt;
+}
+
 export function denyText(raw: string): string {
   return `The prompt's effort tag names "${raw}", which is not an effort level. Start the prompt with [effort: ${LEVELS.join('|')}], or leave the tag out to keep the agent's own effort.`;
 }
@@ -37,8 +43,8 @@ export function describe(description: string): string {
 }
 
 /**
- * Each sub-agent's tagged effort by agent id: an Effort, or null for one read
- * and found untagged. An id absent here has not been read yet.
+ * Each sub-agent's tagged effort by agent id: an Effort, or null for one
+ * spawned untagged. An id absent here was not spawned in this process.
  */
 export class EffortBook {
   private readonly byAgent = new Map<string, Effort | null>();
@@ -54,9 +60,4 @@ export class EffortBook {
   record(agentId: string, tag: Tag): void {
     this.byAgent.set(agentId, tag.kind === 'ok' ? tag.effort : null);
   }
-}
-
-/** The text of the first user message: the prompt a sub-agent was spawned with. */
-export function firstPrompt(messages: ReadonlyArray<{ role: string; text: string }>): string | undefined {
-  return messages.find((m) => m.role === 'user')?.text;
 }
