@@ -11,9 +11,12 @@ v=$(read_json plugins/agent-effort/.claude-plugin/plugin.json version)
 fail=0
 m=$(node -e 'const j = require("./.claude-plugin/marketplace.json"); process.stdout.write(j.plugins.find((p) => p.name === "agent-effort")?.version ?? "")') || { echo "ERROR cannot read marketplace.json"; exit 2; }
 p=$(read_json package.json version)
+l=$(read_json package-lock.json version)
+lr=$(read_json package-lock.json packages..version)
 b=$(grep -oE 'badge/version-[0-9.]+-' README.md | sed -E 's/badge\/version-|-$//g')
 [ "$m" = "$v" ] || { echo "FAIL marketplace.json says $m, plugin.json $v"; fail=1; }
 [ "$p" = "$v" ] || { echo "FAIL package.json says $p, plugin.json $v"; fail=1; }
+[ "$l" = "$v" ] && [ "$lr" = "$v" ] || { echo "FAIL package-lock.json says $l / $lr, plugin.json $v"; fail=1; }
 [ "$b" = "$v" ] || { echo "FAIL README badge says ${b:-nothing}, plugin.json $v"; fail=1; }
 grep -qE "^## \[$v\] — [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md || { echo "FAIL CHANGELOG.md has no dated section for $v"; fail=1; }
 if [ -n "${1:-}" ]; then

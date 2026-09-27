@@ -1,5 +1,5 @@
 import { describe as suite, expect, it } from 'vitest';
-import { DESCRIBE_LINE, EffortBook, LEVELS, denyText, describe, parseTag, stripTag } from '../plugins/agent-effort/src/effort.ts';
+import { DESCRIBE_LINE, LEVELS, denyText, describe, parseTag, stepEffort, stripTag } from '../plugins/agent-effort/src/effort.ts';
 
 suite('parseTag', () => {
   it.each(LEVELS)('reads [effort: %s] at the start of the prompt', (level) => {
@@ -44,28 +44,6 @@ suite('describe', () => {
   });
 });
 
-suite('EffortBook', () => {
-  it('returns the tagged effort for a recorded agent', () => {
-    const book = new EffortBook();
-    book.record('a1', { kind: 'ok', effort: 'high' });
-    expect(book.has('a1')).toBe(true);
-    expect(book.get('a1')).toBe('high');
-  });
-
-  it('marks an untagged agent read, with no effort', () => {
-    const book = new EffortBook();
-    book.record('a2', { kind: 'none' });
-    expect(book.has('a2')).toBe(true);
-    expect(book.get('a2')).toBeUndefined();
-  });
-
-  it('knows nothing of an agent never recorded', () => {
-    const book = new EffortBook();
-    expect(book.has('a3')).toBe(false);
-    expect(book.get('a3')).toBeUndefined();
-  });
-});
-
 suite('stripTag', () => {
   it('removes the tag and the line break after it', () => {
     expect(stripTag('[effort: low]\nMap the callers of X.')).toBe('Map the callers of X.');
@@ -81,5 +59,33 @@ suite('stripTag', () => {
 
   it('returns an untagged prompt unchanged', () => {
     expect(stripTag('Map X.')).toBe('Map X.');
+  });
+});
+
+suite('stepEffort', () => {
+  it('sends a tagged pin whatever the request carries', () => {
+    expect(stepEffort({ level: 'low' }, 'high')).toEqual({ send: 'low' });
+  });
+
+  it('pins an untagged sub-agent to its first request effort', () => {
+    expect(stepEffort({ level: null }, 'medium')).toEqual({ send: 'medium', pin: 'medium' });
+  });
+
+  it('keeps sending the pin after the session effort changes', () => {
+    expect(stepEffort({ level: 'medium' }, 'low')).toEqual({ send: 'medium' });
+  });
+
+  it('pins nothing for a model that takes no effort', () => {
+    expect(stepEffort({ level: null }, undefined)).toEqual({ send: undefined });
+  });
+
+  it('leaves a loop the plugin never saw spawn alone', () => {
+    expect(stepEffort(undefined, 'high')).toEqual({ send: 'high' });
+  });
+});
+
+suite('parseTag on a tag-only prompt', () => {
+  it('reports the missing task', () => {
+    expect(parseTag('[effort: low]\n  ')).toEqual({ kind: 'empty' });
   });
 });
