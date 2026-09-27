@@ -1,0 +1,26 @@
+{
+  "name": "agent-effort",
+  "version": "0.1.0",
+  "description": "Set each Claude Code sub-agent's reasoning effort per spawn: start the Agent prompt with [effort: low|medium|high|xhigh|max].",
+  "license": "MIT",
+  "author": {
+    "name": "Reza · Professor",
+    "url": "https://github.com/rezzminator/professor"
+  },
+  "repository": "https://github.com/rezzminator/agent-effort",
+  "homepage": "https://github.com/rezzminator/agent-effort",
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "sub-agent",
+    "subagent",
+    "effort",
+    "reasoning-effort",
+    "thinking",
+    "function-hooks",
+    "claude-mods",
+    "multi-agent",
+    "token-cost",
+    "professor"
+  ]
+}
