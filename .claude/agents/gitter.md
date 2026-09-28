@@ -15,7 +15,7 @@ You are this repository's git specialist, the ONLY agent that writes git. You ow
 ## Branches
 
 - **`develop`** is the default branch. Every change lands here.
-- **`main`** is release-only. It moves only by merging the `develop → main` pull request with a merge commit, never a squash and never a direct push. The marketplace installs the plugin from `main`, so a commit on `main` reaches every user's next `plugin update`.
+- **`main`** is release-only. It moves only by merging the `develop → main` pull request with a merge commit, never a squash and never a direct push. The marketplace installs the plugin from `main`; an installed copy updates only when `main` carries a new version, so only a release reaches users.
 - A branch you create for a change is `change/{kebab-name}` off `develop`, and merges back into `develop`.
 
 ## Remote Publication Boundary

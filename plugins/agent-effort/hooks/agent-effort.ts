@@ -49,14 +49,30 @@ function settle(spawns: Spawns): void {
 
 // A sub-agent's first request can start before agent.spawn returns its id. An
 // unknown id waits until its own pin appears or no spawn is in flight, never past
-// SPAWN_WAIT_MS, and at most once for its lifetime.
-async function awaitPin($: EngineInterface, spawns: Spawns, agentId: string): Promise<Pin | undefined> {
+// SPAWN_WAIT_MS, and at most once for its lifetime. The turn's abort ends the
+// wait at once, and however the wait ends its timer is cancelled.
+async function awaitPin($: EngineInterface, spawns: Spawns, agentId: string, signal: AbortSignal): Promise<Pin | undefined> {
   let pin = await readPin($, agentId);
   if (pin !== undefined || spawns.strangers.has(agentId)) return pin;
-  const deadline = $.clock.sleep(SPAWN_WAIT_MS).then(() => 'timeout' as const);
-  while (pin === undefined && spawns.inFlight > 0) {
-    if ((await Promise.race([spawns.settled.then(() => 'settled' as const), deadline])) === 'timeout') break;
-    pin = await readPin($, agentId);
+  const waiting = new AbortController();
+  const stop = () => waiting.abort();
+  signal.addEventListener('abort', stop);
+  if (signal.aborted) stop();
+  const deadline = $.clock.sleep(SPAWN_WAIT_MS, { signal: waiting.signal }).then(
+    () => 'over' as const,
+    (error: unknown) => {
+      if (!waiting.signal.aborted) $.ui.log(`agent-effort: sub-agent ${agentId}'s wait for its spawn failed: ${message(error)}; it goes on without waiting`);
+      return 'over' as const;
+    },
+  );
+  try {
+    while (pin === undefined && spawns.inFlight > 0) {
+      if ((await Promise.race([spawns.settled.then(() => 'settled' as const), deadline])) === 'over') break;
+      pin = await readPin($, agentId);
+    }
+  } finally {
+    signal.removeEventListener('abort', stop);
+    waiting.abort();
   }
   if (pin === undefined) spawns.strangers.add(agentId);
   return pin;
@@ -96,7 +112,7 @@ export const register: Register = (on: On) => {
     if (agentId === undefined) return yield* next(e);
     let send = e.effort;
     try {
-      const step = stepEffort(await awaitPin($, spawns, agentId), e.effort);
+      const step = stepEffort(await awaitPin($, spawns, agentId, next.signal), e.effort);
       send = step.send;
       if (step.pin !== undefined) await writePin($, agentId, { level: step.pin });
     } catch (error) {
