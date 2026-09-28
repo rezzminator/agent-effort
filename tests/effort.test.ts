@@ -23,6 +23,19 @@ suite('parseTag', () => {
     expect(parseTag('Map X. [effort: high]')).toEqual({ kind: 'none' });
     expect(parseTag('Note [effort: max] below')).toEqual({ kind: 'none' });
   });
+
+  it('reads a markdown link opening the prompt as no tag', () => {
+    expect(parseTag('[effort: high](http://x) go')).toEqual({ kind: 'none' });
+  });
+
+  it('reads no tag whose brackets span a line break', () => {
+    expect(parseTag('[effort:\nhigh] go')).toEqual({ kind: 'none' });
+    expect(parseTag('[effort: high\n] go')).toEqual({ kind: 'none' });
+  });
+
+  it('refuses a level it does not know rather than dropping the tag', () => {
+    expect(parseTag('[Effort: TBD] notes')).toEqual({ kind: 'bad', raw: 'TBD' });
+  });
 });
 
 suite('denyText', () => {
@@ -51,6 +64,15 @@ suite('stripTag', () => {
 
   it('removes a tag written on the same line as the task, with its spaces', () => {
     expect(stripTag('  [Effort: XHigh]   Map X.')).toBe('Map X.');
+  });
+
+  it("keeps the next line's indentation", () => {
+    expect(stripTag('[effort: high]\n    def f(): pass')).toBe('    def f(): pass');
+    expect(stripTag('[effort: high]  \r\n  x')).toBe('  x');
+  });
+
+  it('leaves a markdown link opening the prompt untouched', () => {
+    expect(stripTag('[effort: high](http://x) go')).toBe('[effort: high](http://x) go');
   });
 
   it('keeps a tag that is not the first thing in the prompt', () => {

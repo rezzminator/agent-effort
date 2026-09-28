@@ -1,5 +1,6 @@
-// The effort tag: `[effort: <level>]` at the very start of an Agent prompt sets
-// that sub-agent's reasoning effort for every model request it makes.
+// The effort tag: `[effort: <level>]` as the first non-blank text of an Agent
+// prompt sets that sub-agent's reasoning effort for every model request its
+// hooks see (not its compaction forks or the panel's `agent_summary`; README).
 
 export const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof LEVELS)[number];
@@ -14,8 +15,9 @@ export type Tag =
   | { kind: 'empty' };
 
 // Anchored at the prompt's first non-blank character; a tag later in the text
-// is prose the sub-agent reads, never a setting.
-const TAG = /^\s*\[\s*effort\s*:\s*([^\]]*?)\s*\]/i;
+// is prose the sub-agent reads, never a setting. The brackets sit on one line,
+// and `[effort: …](…)` is a markdown link, not a tag.
+const TAG = /^\s*\[[^\S\r\n]*effort[^\S\r\n]*:[^\S\r\n]*([^\]\r\n]*?)[^\S\r\n]*\](?!\()/i;
 
 export function isEffort(value: string): value is Effort {
   return (LEVELS as readonly string[]).includes(value);
@@ -33,7 +35,7 @@ export function parseTag(prompt: string): Tag {
 /** The prompt without its leading tag, as the sub-agent reads it. */
 export function stripTag(prompt: string): string {
   const match = TAG.exec(prompt);
-  return match ? prompt.slice(match[0].length).replace(/^[^\S\n]*\n?[^\S\n]*/, '') : prompt;
+  return match ? prompt.slice(match[0].length).replace(/^[^\S\r\n]*(?:\r?\n)?/, '') : prompt;
 }
 
 export const EMPTY_TEXT = 'The prompt holds an effort tag and no task. Put the task after the tag.';

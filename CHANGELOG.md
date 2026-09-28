@@ -4,6 +4,20 @@ Every release of agent-effort. Versions follow [semantic versioning](https://sem
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-09-28
+
+### Fixed
+- Removing the tag keeps the next line's indentation: only the spaces after the tag on its own line and one line break are removed.
+- A markdown link opening the prompt (`[effort: high](…)`) and brackets spanning a line break are no longer read as a tag.
+- An interrupted turn ends a sub-agent request's wait for its spawn at once, and the wait's timer is cancelled however the wait ends.
+- The release check exits 2 with a clear error when a manifest cannot be read, accepts prerelease versions in the badge and compares versions by semver, escapes the version in its patterns, and fails on an unchecked `cd`.
+- The release workflow refuses a tag whose version differs from the plugin manifest at the tagged commit.
+- CI pins its GitHub actions by commit SHA and the Claude Code CLI by version.
+
+### Changed
+- The READMEs say the tag is the prompt's first non-blank text on one line and that a markdown link is not one, name the requests that are not pinned (compaction forks, `agent_summary`), and add the requirement, the tested Claude Code version and how to uninstall.
+- The gitter agent states that only a release reaches installed copies.
+
 ## [0.1.1] — 2026-09-27
 
 ### Added
