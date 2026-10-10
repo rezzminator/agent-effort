@@ -1,5 +1,5 @@
 import { describe as suite, expect, it } from 'vitest';
-import { DESCRIBE_LINE, LEVELS, denyText, describe, parseTag, stepEffort, stripTag } from '../plugins/agent-effort/src/effort.ts';
+import { DESCRIBE_LINE, LEVELS, denyText, describe, isStillRunning, parseTag, stepEffort, stripTag } from '../plugins/agent-effort/src/effort.ts';
 
 suite('parseTag', () => {
   it.each(LEVELS)('reads [effort: %s] at the start of the prompt', (level) => {
@@ -109,5 +109,12 @@ suite('stepEffort', () => {
 suite('parseTag on a tag-only prompt', () => {
   it('reports the missing task', () => {
     expect(parseTag('[effort: low]\n  ')).toEqual({ kind: 'empty' });
+  });
+});
+
+suite('isStillRunning', () => {
+  it('holds while the run goes on or waits on its own background work, never once the sub-agent finished', () => {
+    for (const status of ['running', 'waiting']) expect(isStillRunning(status)).toBe(true);
+    for (const status of ['completed', 'idle', 'failed', 'killed', undefined]) expect(isStillRunning(status)).toBe(false);
   });
 });

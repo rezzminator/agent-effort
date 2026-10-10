@@ -1,5 +1,5 @@
 import type { EngineInterface, On, Register } from 'claude-code';
-import { describe, denyText, EMPTY_TEXT, parseTag, stepEffort, stripTag, type Pin } from '../src/effort.ts';
+import { describe, denyText, EMPTY_TEXT, isStillRunning, parseTag, stepEffort, stripTag, type Pin } from '../src/effort.ts';
 
 // Thin adapter: every decision lives in src/effort.ts. A failure is logged with
 // its context and the request goes through at the effort it already had.
@@ -122,14 +122,14 @@ export const register: Register = (on: On) => {
   });
 
   // A finished sub-agent drops its pin, so a continuation is pinned afresh at its
-  // first request. A run that ends while the agent still runs (it waits on its
-  // own background task) is the same job resuming later: its pin stays.
+  // first request. A run that ends while the agent still runs, or waits on its own
+  // background work, is the same job resuming later: its pin stays.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e);
     if (e.agentId === undefined) return result;
     try {
       const status = (await $.agent.list()).find((agent) => agent.id === e.agentId)?.status;
-      if (status === 'running') return result;
+      if (isStillRunning(status)) return result;
       if ((await readPin($, e.agentId)) !== undefined) await writePin($, e.agentId, { level: null });
     } catch (error) {
       $.ui.log(`agent-effort: clearing sub-agent ${e.agentId}'s pin failed: ${message(error)}; its next run keeps the old pin`);

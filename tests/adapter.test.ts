@@ -131,6 +131,17 @@ suite('pins', () => {
     expect(await x.step('a1', 'low')).toBe('max');
   });
 
+  it('keeps the pin when a run ends while its own background child still runs, so the wake stays tagged', async () => {
+    // The engine reports such an agent as `waiting`: its run is over, and its child's notification resumes it.
+    const x = engine();
+    const s = x.spawn('[effort: max]\nMap X.');
+    s.start('a1');
+    await s.result;
+    x.statuses.set('a1', 'waiting');
+    await x.complete('a1');
+    expect(await x.step('a1', 'low')).toBe('max');
+  });
+
   it('never pins the main chat', async () => {
     const x = engine();
     expect(await x.step(undefined, 'high')).toBe('high');

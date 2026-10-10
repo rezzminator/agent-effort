@@ -4,6 +4,10 @@ Every release of agent-effort. Versions follow [semantic versioning](https://sem
 
 ## [Unreleased]
 
+### Fixed
+- A tagged sub-agent whose run ends while its own background child, shell or monitor still runs keeps its pin, so the run that work's notification wakes stays at the tagged effort. The engine reports such an agent as `waiting`, which used to clear the pin.
+- The README says the panel's `agent_summary` request carries the effort the sub-agent's definition declares; it said the session's.
+
 ## [0.1.2] — 2026-09-28
 
 ### Fixed

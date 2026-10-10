@@ -69,3 +69,14 @@ export function stepEffort(pin: Pin | undefined, requested: Level | undefined): 
   if (pin.level !== null) return { send: pin.level };
   return requested === undefined ? { send: undefined } : { send: requested, pin: requested };
 }
+
+/**
+ * Whether a sub-agent whose run just ended is still the same job, its pin kept, as
+ * `$.agent.list()` reports it: `running`, or `waiting`, its run over while its own
+ * background work (a child agent, a backgrounded shell, a monitor) still runs and
+ * that work's notification resumes it. `idle`, `completed`, `failed`, `killed` and
+ * an agent no longer listed have finished.
+ */
+export function isStillRunning(status: string | undefined): boolean {
+  return status === 'running' || status === 'waiting';
+}
