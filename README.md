@@ -5,7 +5,7 @@
 **Set each Claude Code sub-agent's reasoning effort per spawn: start the Agent prompt with `[effort: low|medium|high|xhigh|max]`.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.1.2-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.3-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-39%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -57,7 +57,7 @@ claude plugin uninstall agent-effort@agent-effort
 | `tool.describe` | Appends the tag's usage to the Agent tool's description. |
 | `agent.spawn` | Reads the tag, the prompt's first non-blank text. An unknown level refuses the spawn, and the model sees why. A valid tag is removed from the prompt, so the sub-agent never sees it, and recorded against the new sub-agent's id. |
 | `turn.step` | Before each of that sub-agent's model requests, sets the request's `effort` to its pin: the tagged level, or for an untagged sub-agent the effort of its first request. |
-| `turn.complete` | When a sub-agent finishes, clears its pin. A run that ends while the agent still runs (waiting on its own background task) keeps it. |
+| `turn.complete` | When a sub-agent finishes, clears its pin. A run that ends while the agent still runs, or waits on its own background work (a child agent, a backgrounded shell, a monitor), keeps it. |
 
 - The tag counts only as the prompt's first non-blank text, written on one line. `[effort: high]` later in the prompt is ordinary prose, and a markdown link `[effort: high](…)` is not a tag.
 - Levels are case-insensitive: `low`, `medium`, `high`, `xhigh`, `max`.
@@ -66,7 +66,7 @@ claude plugin uninstall agent-effort@agent-effort
 - The sub-agent reads its prompt without the tag. A prompt that is only a tag is refused.
 - Pins are held by Claude Code for the session and survive a plugin reload. A sub-agent resumed in a new session runs unpinned, at its own effort.
 - A model that takes no effort setting (such as Haiku) is sent none, whatever the tag says.
-- Two requests made on a sub-agent's behalf are not pinned. Its compaction forks are loops no spawn names, so they keep the effort they carry. The agent panel's progress line for a background sub-agent comes from a separate short request Claude Code sends about every 30 seconds (`agent_summary`); it passes through no plugin hook, so it runs at the session's effort. The sub-agent's own requests are pinned.
+- Two requests made on a sub-agent's behalf are not pinned. Its compaction forks are loops no spawn names, so they keep the effort they carry. The agent panel's progress line for a background sub-agent comes from a separate short request Claude Code sends about every 30 seconds (`agent_summary`); it passes through no plugin hook, so it carries the effort the sub-agent's definition declares, never its tag's. The sub-agent's own requests are pinned.
 - Only sub-agents are affected. The main chat keeps `/effort`.
 
 ## ❓ FAQ
