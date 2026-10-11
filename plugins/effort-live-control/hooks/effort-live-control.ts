@@ -16,12 +16,12 @@ function message(error: unknown): string {
 
 // Pins live in host state, so a plugin reload keeps them; one value per agent id.
 async function readPin($: EngineInterface, agentId: string): Promise<Pin | undefined> {
-  const { value } = await $.state.get({ plugin: 'agent-effort', key: 'pin', id: agentId });
+  const { value } = await $.state.get({ plugin: 'effort-live-control', key: 'pin', id: agentId });
   return value ?? undefined;
 }
 
 async function writePin($: EngineInterface, agentId: string, pin: Pin): Promise<void> {
-  await $.state.set({ plugin: 'agent-effort', key: 'pin', id: agentId }, pin);
+  await $.state.set({ plugin: 'effort-live-control', key: 'pin', id: agentId }, pin);
 }
 
 type Spawns = {
@@ -61,7 +61,7 @@ async function awaitPin($: EngineInterface, spawns: Spawns, agentId: string, sig
   const deadline = $.clock.sleep(SPAWN_WAIT_MS, { signal: waiting.signal }).then(
     () => 'over' as const,
     (error: unknown) => {
-      if (!waiting.signal.aborted) $.ui.log(`agent-effort: sub-agent ${agentId}'s wait for its spawn failed: ${message(error)}; it goes on without waiting`);
+      if (!waiting.signal.aborted) $.ui.log(`effort-live-control: sub-agent ${agentId}'s wait for its spawn failed: ${message(error)}; it goes on without waiting`);
       return 'over' as const;
     },
   );
@@ -98,7 +98,7 @@ export const register: Register = (on: On) => {
         try {
           await writePin($, result.agentId, { level: tag.kind === 'ok' ? tag.effort : null });
         } catch (error) {
-          $.ui.log(`agent-effort: recording sub-agent ${result.agentId}'s pin failed: ${message(error)}; it runs at the session's effort, unpinned`);
+          $.ui.log(`effort-live-control: recording sub-agent ${result.agentId}'s pin failed: ${message(error)}; it runs at the session's effort, unpinned`);
         }
       }
       return result;
@@ -116,7 +116,7 @@ export const register: Register = (on: On) => {
       send = step.send;
       if (step.pin !== undefined) await writePin($, agentId, { level: step.pin });
     } catch (error) {
-      $.ui.log(`agent-effort: resolving sub-agent ${agentId}'s effort failed: ${message(error)}; this request goes at ${String(e.effort)}`);
+      $.ui.log(`effort-live-control: resolving sub-agent ${agentId}'s effort failed: ${message(error)}; this request goes at ${String(e.effort)}`);
     }
     return yield* next(send === undefined || send === e.effort ? e : { ...e, effort: send });
   });
@@ -132,7 +132,7 @@ export const register: Register = (on: On) => {
       if (isStillRunning(status)) return result;
       if ((await readPin($, e.agentId)) !== undefined) await writePin($, e.agentId, { level: null });
     } catch (error) {
-      $.ui.log(`agent-effort: clearing sub-agent ${e.agentId}'s pin failed: ${message(error)}; its next run keeps the old pin`);
+      $.ui.log(`effort-live-control: clearing sub-agent ${e.agentId}'s pin failed: ${message(error)}; its next run keeps the old pin`);
     }
     return result;
   });

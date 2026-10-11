@@ -1,6 +1,6 @@
 <div align="center">
 
-# agent-effort
+# effort-live-control
 
 **Set each Claude Code sub-agent's reasoning effort per spawn: start the Agent prompt with `[effort: low|medium|high|xhigh|max]`.**
 
@@ -38,8 +38,8 @@ export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 Then install:
 
 ```text
-/plugin marketplace add rezzminator/agent-effort
-/plugin install agent-effort@agent-effort
+/plugin marketplace add rezzminator/effort-live-control
+/plugin install effort-live-control@effort-live-control
 ```
 
 The Agent tool's description now tells the model about the tag, so no prompt change is needed on your side.
@@ -47,7 +47,7 @@ The Agent tool's description now tells the model about the tag, so no prompt cha
 It requires function hooks enabled (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`) and is tested on Claude Code 2.1.283. To remove it:
 
 ```bash
-claude plugin uninstall agent-effort@agent-effort
+claude plugin uninstall effort-live-control@effort-live-control
 ```
 
 ## 🧠 How it works
@@ -86,17 +86,17 @@ npm run typecheck      # src and the hooks module against the plugin API types
 npm run validate:plugin
 ```
 
-A live run loads the checkout with `claude --plugin-dir plugins/agent-effort`, with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`.
+A live run loads the checkout with `claude --plugin-dir plugins/effort-live-control`, with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`.
 
 | Module | Role |
 | --- | --- |
 | `src/effort.ts` | The tag parser, the deny texts, the description line, the per-request pin decision |
-| `hooks/agent-effort.ts` | The adapter: the four hooks and the pins in host state, and the only file that touches `$` |
+| `hooks/effort-live-control.ts` | The adapter: the four hooks and the pins in host state, and the only file that touches `$` |
 | `contract.d.ts` | The host-state contract: one pin per agent id |
 
 ## 🎓 Built with Professor
 
-agent-effort is built and maintained with [Professor](https://github.com/rezzminator/professor), a fleet controller and discipline layer for Claude Code, Codex and OpenCode: chats that message each other, agents held to the project's rules, and gated releases. This plugin came out of it: Professor's orchestrators choose an effort for every dispatch, and this plugin makes that choice apply.
+effort-live-control is built and maintained with [Professor](https://github.com/rezzminator/professor), a fleet controller and discipline layer for Claude Code, Codex and OpenCode: chats that message each other, agents held to the project's rules, and gated releases. This plugin came out of it: Professor's orchestrators choose an effort for every dispatch, and this plugin makes that choice apply.
 
 ## License
 

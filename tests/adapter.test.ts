@@ -1,5 +1,5 @@
 import { describe as suite, expect, it } from 'vitest';
-import { register } from '../plugins/agent-effort/hooks/agent-effort.ts';
+import { register } from '../plugins/effort-live-control/hooks/effort-live-control.ts';
 
 // A stand-in engine: host state that outlives a re-register, a clock the test
 // fires, and the hooks the module registers, driven the way the engine drives them.

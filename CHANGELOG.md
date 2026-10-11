@@ -1,6 +1,6 @@
 # Changelog
 
-Every release of agent-effort. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `agent-effort--v<version>`, with a GitHub release carrying the section below.
+Every release of effort-live-control (named agent-effort through 0.1.3). Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `effort-live-control--v<version>` (`agent-effort--v<version>` through 0.1.3), with a GitHub release carrying the section below.
 
 ## [Unreleased]
 
