@@ -5,6 +5,10 @@ import { isEffort, isParentTag, LEVELS, type Effort, type ParentTag } from './ef
 import { parseTripwires } from './judge.ts';
 import { rank } from './ladder.ts';
 
+/** `off`: the main chat is untouched. `tripwires`: steered like a steered agent, at the level each request asks for. `reader`: also set at each new prompt by the prompt reader. */
+export const MAIN_CHATS = ['off', 'tripwires', 'reader'] as const;
+export type MainChat = (typeof MAIN_CHATS)[number];
+
 export type Settings = {
   floor: Effort;
   ceiling: Effort;
@@ -18,11 +22,17 @@ export type Settings = {
   judgeModel: string;
   judgeEffort: Effort;
   judgeTimeoutMs: number;
+  mainChat: MainChat;
+  /** The prompt reader's casebook (JSONL); a leading `~` is the home directory. Empty: none. */
+  casebookFile: string;
+  promptModel: string;
+  promptEffort: Effort;
+  promptTimeoutMs: number;
   buttons: boolean;
   announce: boolean;
   testCommandPatterns: string[];
   /** Programs whose arguments are never a test run: a search, a print, a read. */
-  readerCommands: string[];
+  readOnlyCommands: string[];
   failurePatterns: string[];
   redWords: string[];
   greenWords: string[];
@@ -42,6 +52,11 @@ export const DEFAULTS: Settings = {
   judgeModel: 'haiku',
   judgeEffort: 'xhigh',
   judgeTimeoutMs: 45000,
+  mainChat: 'reader',
+  casebookFile: '~/.local/state/effort-live-control/casebook.jsonl',
+  promptModel: 'haiku',
+  promptEffort: 'xhigh',
+  promptTimeoutMs: 10000,
   buttons: true,
   announce: true,
   testCommandPatterns: [
@@ -63,7 +78,7 @@ export const DEFAULTS: Settings = {
     '\\b(rspec|phpunit|ctest|tox|nox)\\b',
     '\\bscripts?/test[\\w.-]*\\.sh\\b',
   ],
-  readerCommands: `cat grep egrep fgrep rg ag ack echo printf sed awk head tail less more ls find fd git wc which type man file stat diff jq yq sort uniq cut tr tee test [ [[ cd pushd popd mkdir rm cp mv touch chmod ln basename dirname realpath readlink date sleep true false export read wait kill`.split(' '),
+  readOnlyCommands: `cat grep egrep fgrep rg ag ack echo printf sed awk head tail less more ls find fd git wc which type man file stat diff jq yq sort uniq cut tr tee test [ [[ cd pushd popd mkdir rm cp mv touch chmod ln basename dirname realpath readlink date sleep true false export read wait kill`.split(' '),
   failurePatterns: ['--- FAIL', 'FAIL(ED)?', '(?<!\\d)[1-9]\\d* (failed|failing)', 'AssertionError', 'panic:', 'Traceback'],
   redWords: ['FAIL', 'FAILED', 'BLOCKED', 'PARTIAL', 'SPEC-DRIFT'],
   greenWords: ['DONE', 'PASS', 'FIXED'],
@@ -107,6 +122,11 @@ const parsePercent = (raw: unknown): Parsed<number> => {
 
 const parseParentTag = (raw: unknown): Parsed<ParentTag> => (isParentTag(raw) ? good(raw) : bad('not honor or ignore'));
 
+const parseMainChat = (raw: unknown): Parsed<MainChat> => {
+  const found = typeof raw === 'string' ? MAIN_CHATS.find((mode) => mode === raw) : undefined;
+  return found === undefined ? bad(`not ${MAIN_CHATS.slice(0, -1).join(', ')} or ${MAIN_CHATS[MAIN_CHATS.length - 1]}`) : good(found);
+};
+
 const parseText = (raw: unknown): Parsed<string> => (typeof raw === 'string' ? good(raw) : bad('not text'));
 
 function parseTripwireList(raw: unknown): Parsed<string> {
@@ -145,7 +165,7 @@ const regexItem = (item: string): string | undefined => {
 
 const wordItem = (item: string): string | undefined => (/^[A-Za-z][A-Za-z0-9_-]*$/.test(item) ? undefined : `${quote(item)} is not a word of letters, digits, _ and -`);
 const modelItem = (item: string): string | undefined => (/^\S+$/.test(item) ? undefined : `${quote(item)} is not a model id prefix (text without spaces)`);
-const readerItem = (item: string): string | undefined => (/^\S+$/.test(item) ? undefined : `${quote(item)} is not a program name (text without spaces)`);
+const readOnlyItem = (item: string): string | undefined => (/^\S+$/.test(item) ? undefined : `${quote(item)} is not a program name (text without spaces)`);
 const dirItem = (item: string): string | undefined => (item.trim() !== '' ? undefined : 'an empty directory');
 
 const PARSERS: { [K in keyof Settings]: (raw: unknown) => Parsed<Settings[K] | 'default'> } = {
@@ -159,10 +179,15 @@ const PARSERS: { [K in keyof Settings]: (raw: unknown) => Parsed<Settings[K] | '
   judgeModel: parseModel,
   judgeEffort: parseLevel,
   judgeTimeoutMs: parseInt1,
+  mainChat: parseMainChat,
+  casebookFile: parseText,
+  promptModel: parseModel,
+  promptEffort: parseLevel,
+  promptTimeoutMs: parseInt1,
   buttons: parseBool,
   announce: parseBool,
   testCommandPatterns: listOf(regexItem),
-  readerCommands: listOf(readerItem),
+  readOnlyCommands: listOf(readOnlyItem),
   failurePatterns: listOf(regexItem),
   redWords: listOf(wordItem),
   greenWords: listOf(wordItem),
@@ -195,13 +220,13 @@ export function resolveSettings(raw: Readonly<Record<string, unknown>>): { setti
   return { settings: out, errors };
 }
 
-export type Compiled = { failure: RegExp[]; testCommand: RegExp[]; readers: ReadonlySet<string> };
+export type Compiled = { failure: RegExp[]; testCommand: RegExp[]; readOnly: ReadonlySet<string> };
 
 /** The pattern lists as regular expressions, which match case-sensitively. */
 export function compile(settings: Settings): Compiled {
   return {
     failure: settings.failurePatterns.map((source) => new RegExp(source)),
     testCommand: settings.testCommandPatterns.map((source) => new RegExp(source)),
-    readers: new Set(settings.readerCommands),
+    readOnly: new Set(settings.readOnlyCommands),
   };
 }

@@ -3,7 +3,7 @@
 
 import type { Effort } from './effort.ts';
 import { collapse, packet as buildPacket, parseAnswer, type Tripwire } from './judge.ts';
-import { clamp, step } from './ladder.ts';
+import { clamp, rank, step } from './ladder.ts';
 import { returnLine, type ReturnWords } from './signals.ts';
 import { announceLine, boundText, buttonText, whyChild, whyJudge, whyRedispatch, whyResolved, WHY_FAIL1, WHY_FAIL2, WHY_JUDGE_FAILED, WHY_LANDING, type Direction } from './text.ts';
 
@@ -73,6 +73,7 @@ export class Controller {
   private readonly requests: Record<string, number> = {};
   private lastWords = '';
   private failTail: string | undefined;
+  private home: Effort;
   private model = '';
   private gated = false;
   private line: string | undefined;
@@ -80,6 +81,7 @@ export class Controller {
   constructor(private readonly setup: Setup) {
     this.level = clamp(setup.home, setup.floor, setup.ceiling);
     this.base = this.level;
+    this.home = setup.home;
   }
 
   get id(): string {
@@ -92,6 +94,22 @@ export class Controller {
 
   get struggleOpen(): boolean {
     return this.struggle !== undefined;
+  }
+
+  /**
+   * A new turn of the main chat: `home` (held within the range) is the level it starts at and returns to. An open
+   * struggle goes on, its failure streak with it: it resolves to the new home, and the level never sits below it.
+   */
+  setHome(home: Effort): void {
+    const to = clamp(home, this.setup.floor, this.setup.ceiling);
+    this.home = to;
+    if (this.struggle) {
+      this.struggle.pre = to;
+      if (rank(this.level) < rank(to)) this.level = to;
+      return;
+    }
+    this.level = to;
+    this.base = to;
   }
 
   /** The effort to send for one request, or undefined to pass it through untouched. */
@@ -138,7 +156,7 @@ export class Controller {
     this.event(`spawn ${spawn.type}`);
     this.seen.clear();
     if (this.setup.landing.includes(spawn.type)) {
-      const base = step(this.setup.home, -1, this.setup.floor, this.setup.ceiling);
+      const base = step(this.home, -1, this.setup.floor, this.setup.ceiling);
       const from = this.level;
       this.base = base;
       if (this.struggle) this.struggle.pre = base;
@@ -310,7 +328,7 @@ export class Controller {
       type: this.setup.type,
       model: this.model,
       level: this.level,
-      home: this.setup.home,
+      home: this.home,
       floor: this.setup.floor,
       ceiling: this.setup.ceiling,
       tripwire: kind,

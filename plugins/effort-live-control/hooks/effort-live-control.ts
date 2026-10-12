@@ -3,8 +3,9 @@ import { Definitions, type ControlConfig, type Definition } from '../src/agents.
 import { Controller, type Action } from '../src/control.ts';
 import { describe, denyText, EMPTY_TEXT, isStillRunning, parseTag, stepEffort, stripTag, type Effort, type Pin } from '../src/effort.ts';
 import { JUDGE_SYSTEM, parseTripwires, TRIPWIRES } from '../src/judge.ts';
-import { isLevel } from '../src/ladder.ts';
+import { clamp, isLevel } from '../src/ladder.ts';
 import { appendRows, sessionLogPath } from '../src/log.ts';
+import { buildReader, CasebookCache, decide, NO_PREVIOUS, parseReaderAnswer, type CasebookIo } from '../src/reader.ts';
 import { compile, resolveSettings, type Compiled, type Settings } from '../src/settings.ts';
 import { isTestRun, testOutcome } from '../src/signals.ts';
 import { startOf } from '../src/start.ts';
@@ -21,6 +22,14 @@ const SPAWN_WAIT_MS = 5000;
 
 const LOG_CAP = 5000;
 const JUDGE_MAX_TOKENS = 4000;
+const READER_MAX_TOKENS = 4000;
+
+/** The main chat's id in the decision log and its controller's. */
+const MAIN = 'main';
+/** The malformed casebook lines one log line names. */
+const BAD_LINES_SHOWN = 20;
+/** The prompts waiting for their turn that are remembered; a prompt that never started one falls off. */
+const WAITING_MAX = 20;
 
 type Fields = Record<string, unknown>;
 
@@ -103,6 +112,11 @@ type Runtime = {
   defs?: Definitions;
   /** The decision log's path pattern with `~` expanded; empty: no log. */
   logFile: string;
+  /** The casebook's path with `~` expanded; empty: none. */
+  casebookPath: string;
+  /** Why the casebook cannot be reached at all (its path needs an unset HOME); the reader's rows carry it. */
+  casebookNote: string | undefined;
+  casebook: CasebookCache;
   logPath?: Promise<string | undefined>;
   pending: string[];
   writing: Promise<void>;
@@ -112,6 +126,16 @@ type Runtime = {
   childOf: Map<string, string>;
   /** The full tool names `$.tool.register` returned. */
   buttons: Map<string, Direction>;
+  /** The main chat's controller, once its first steered request came (never with `mainChat: off`). */
+  main: Controller | undefined;
+  /** The id of the turn the main controller last saw a request of. */
+  mainTurn: string | undefined;
+  /** Prompts whose turn has not started: the text, and the level the prompt reader set for it (undefined: no decision). */
+  waiting: Array<{ text: string; home: Effort | undefined }>;
+  /** A started turn's id → the level its prompt's reader set, held within floor..ceiling, until its first request takes it. */
+  turnHomes: Map<string, Effort | undefined>;
+  /** The main chat's last non-empty reply, from its turn.complete. */
+  lastReply: string | undefined;
 };
 
 // Rows queue in memory; each flush reads the session's file and appends them,
@@ -169,6 +193,11 @@ function start(rt: Runtime, $: EngineInterface): Promise<void> {
     const file = rt.config.logFile;
     if (file.startsWith('~') && !home) $.ui.log(`effort-live-control: logFile ${file} needs HOME, which is unset; the decision log is off`);
     else rt.logFile = file.startsWith('~') ? `${home}${file.slice(1)}` : file;
+    const book = rt.config.casebookFile;
+    if (book.startsWith('~') && !home) {
+      rt.casebookNote = `casebookFile ${book} needs HOME, which is unset`;
+      $.ui.log(`effort-live-control: ${rt.casebookNote}; the prompt reader runs without a casebook`);
+    } else rt.casebookPath = book.startsWith('~') ? `${home}${book.slice(1)}` : book;
     for (const line of rt.optionErrors) {
       $.ui.log(line);
       record(rt, $, 'main', 'option-error', { event: 'option-error', line });
@@ -198,6 +227,34 @@ async function definitionOf(rt: Runtime, $: EngineInterface, type: string | unde
     $.ui.log(`effort-live-control: reading the definition of ${type} failed: ${message(error)}; treating it as having none`);
     return NO_DEFINITION(rt);
   }
+}
+
+// The steered controller of an agent id; the main chat (no id) has the one `mainChat` gives it.
+function controllerOf(rt: Runtime, agentId: string | undefined): Controller | undefined {
+  return agentId === undefined ? rt.main : rt.steered.get(agentId);
+}
+
+// A controller by the id its rows carry, the main chat's included.
+function controllerById(rt: Runtime, id: string): Controller | undefined {
+  return rt.main?.id === id ? rt.main : rt.steered.get(id);
+}
+
+function newMain(rt: Runtime, home: Effort): Controller {
+  return new Controller({
+    id: MAIN,
+    type: MAIN,
+    home,
+    floor: rt.config.floor,
+    ceiling: rt.config.ceiling,
+    judge: rt.config.judge,
+    judgeRaiseAt: rt.config.judgeRaiseAt,
+    tripwires: new Set(tripwiresOf(rt.config.tripwires)),
+    landing: [],
+    models: rt.config.models,
+    words: { red: rt.config.redWords, green: rt.config.greenWords },
+    announce: rt.config.announce,
+    brief: '(the main chat)',
+  });
 }
 
 function newController(rt: Runtime, id: string, type: string, control: ControlConfig, home: Effort, brief: string): Controller {
@@ -240,7 +297,7 @@ function runJudge(rt: Runtime, $: EngineInterface, controller: Controller, actio
     .complete({ model: rt.config.judgeModel, effort: rt.config.judgeEffort, system: JUDGE_SYSTEM, prompt: action.packet, maxTokens: JUDGE_MAX_TOKENS, timeoutMs: rt.config.judgeTimeoutMs })
     .then(
       (reply) => {
-        if (rt.steered.get(controller.id) !== controller) return;
+        if (controllerById(rt, controller.id) !== controller) return;
         const ms = Date.now() - started;
         const out = reply.isAnswered
           ? controller.onJudgeAnswer(action.epoch, reply.text, ms, reply.usage)
@@ -248,7 +305,7 @@ function runJudge(rt: Runtime, $: EngineInterface, controller: Controller, actio
         perform(rt, $, controller, out.actions);
       },
       (error: unknown) => {
-        if (rt.steered.get(controller.id) !== controller) return;
+        if (controllerById(rt, controller.id) !== controller) return;
         perform(rt, $, controller, controller.onJudgeFailure(action.epoch, `threw: ${message(error)}`).actions);
       },
     )
@@ -266,7 +323,7 @@ function afterSpawn(rt: Runtime, $: EngineInterface, agentId: string, type: stri
   try {
     const start = startOfSpawn(definition, tagged);
     if (start.row) record(rt, $, agentId, type, start.row);
-    const parent = parentId === undefined ? undefined : rt.steered.get(parentId);
+    const parent = controllerOf(rt, parentId);
     if (parent) {
       rt.childOf.set(agentId, parent.id);
       perform(rt, $, parent, parent.onSpawn({ childId: agentId, type, name }).actions);
@@ -300,7 +357,7 @@ function observe(rt: Runtime, $: EngineInterface, controller: Controller, e: Fie
     perform(rt, $, controller, controller.onSendMessage(String(e.to)).actions);
     return;
   }
-  const command = isTestRun(e.tool, e, rt.compiled.testCommand, rt.compiled.readers);
+  const command = isTestRun(e.tool, e, rt.compiled.testCommand, rt.compiled.readOnly);
   if (command !== undefined) {
     const failed = testOutcome(result.isError, text, rt.compiled.failure) === 'fail';
     perform(rt, $, controller, controller.onTestRun({ command, failed, text }).actions);
@@ -310,9 +367,9 @@ function observe(rt: Runtime, $: EngineInterface, controller: Controller, e: Fie
 }
 
 function answerButton(rt: Runtime, $: EngineInterface, agentId: string | undefined, direction: Direction): { result: string } {
-  const controller = agentId === undefined ? undefined : rt.steered.get(agentId);
+  const controller = controllerOf(rt, agentId);
   if (!controller) {
-    record(rt, $, agentId ?? 'main', 'unsteered', { event: 'button-refused', direction });
+    record(rt, $, agentId ?? MAIN, 'unsteered', { event: 'button-refused', direction });
     return { result: REFUSED };
   }
   const out = controller.onButton(direction);
@@ -342,7 +399,7 @@ async function registerButtons(rt: Runtime, $: EngineInterface): Promise<void> {
 function finish(rt: Runtime, $: EngineInterface, agentId: string, answer: string): void {
   try {
     const parentId = rt.childOf.get(agentId);
-    const parent = parentId === undefined ? undefined : rt.steered.get(parentId);
+    const parent = parentId === undefined ? undefined : controllerById(rt, parentId);
     if (parent) perform(rt, $, parent, parent.onChildReturn(agentId, answer).actions);
     const own = rt.steered.get(agentId);
     if (own) {
@@ -356,6 +413,106 @@ function finish(rt: Runtime, $: EngineInterface, agentId: string, answer: string
   }
 }
 
+// ---- the main chat ----
+
+const casebookIo = ($: EngineInterface): CasebookIo => ({
+  stat: async (path) => ({ mtimeMs: (await $.fs.stat(path)).mtimeMs }),
+  read: (path) => $.fs.read(path),
+});
+
+// The end of the main chat's previous reply: the last turn.complete's answer, else (a plugin loaded mid-session)
+// the transcript's last assistant text; none yet is the first message of the session.
+async function previousReply(rt: Runtime, $: EngineInterface): Promise<string> {
+  if (rt.lastReply === undefined) {
+    try {
+      const last = (await $.session.messages()).filter((entry) => entry.role === 'assistant' && entry.text.trim() !== '').at(-1);
+      if (last !== undefined) rt.lastReply = last.text;
+    } catch (error) {
+      $.ui.log(`effort-live-control: reading the transcript for the previous reply failed: ${message(error)}; the reader sees none`);
+    }
+  }
+  return rt.lastReply?.trim() || NO_PREVIOUS;
+}
+
+// The casebook, read once and again when its mtime changes; a malformed line or a failed read is said once per read.
+async function readCasebook(rt: Runtime, $: EngineInterface) {
+  if (rt.casebookPath === '') return { rows: [], error: rt.casebookNote };
+  const { book, fresh } = await rt.casebook.get(rt.casebookPath, casebookIo($));
+  if (fresh && book.bad.length > 0) {
+    const shown = book.bad.slice(0, BAD_LINES_SHOWN).join(', ');
+    $.ui.log(`effort-live-control: the casebook ${rt.casebookPath} has malformed lines ${shown}${book.bad.length > BAD_LINES_SHOWN ? ` and ${book.bad.length - BAD_LINES_SHOWN} more` : ''}; they are skipped`);
+  }
+  if (book.state === 'unreadable') $.ui.log(`effort-live-control: reading the casebook ${rt.casebookPath} failed: ${book.error}; the reader runs without a casebook`);
+  return { rows: book.rows, error: book.state === 'unreadable' ? book.error : undefined };
+}
+
+// One reader call for a prompt that starts a turn, awaited before the prompt enters. Its decision is the home of the
+// turn that prompt starts; with none, that turn's home is the level its first request asks for, and the row says why.
+async function readPrompt(rt: Runtime, $: EngineInterface, text: string): Promise<Effort | undefined> {
+  await start(rt, $);
+  let model: string | undefined;
+  try {
+    model = await $.session.model();
+  } catch (error) {
+    $.ui.log(`effort-live-control: reading the main model failed: ${message(error)}; the prompt reader runs anyway`);
+  }
+  if (model !== undefined && !rt.config.models.some((prefix) => (model as string).startsWith(prefix))) {
+    record(rt, $, MAIN, MAIN, { event: 'reader-gated', model });
+    return undefined;
+  }
+  const casebook = await readCasebook(rt, $);
+  const built = buildReader(text, await previousReply(rt, $), casebook.rows);
+  const shown = { casebook: built.core.length, precedents: built.precedents.length, ...(casebook.error === undefined ? {} : { casebookError: casebook.error }) };
+  const row = (fields: Fields, answer?: string) => record(rt, $, MAIN, MAIN, { ...fields, ...shown, ...(rt.config.logPackets ? { packet: built.prompt, answer: answer ?? null } : {}) });
+  const started = Date.now();
+  let reply;
+  try {
+    reply = await $.model.complete({ model: rt.config.promptModel, effort: rt.config.promptEffort, prompt: built.prompt, maxTokens: READER_MAX_TOKENS, timeoutMs: rt.config.promptTimeoutMs });
+  } catch (error) {
+    row({ event: 'reader-failed', error: `threw: ${message(error)}`, ms: Date.now() - started });
+    return undefined;
+  }
+  const ms = Date.now() - started;
+  if (!reply.isAnswered) {
+    if (reply.reason === 'aborted') row({ event: 'reader-timeout', ms });
+    else if (reply.reason === 'api-error') row({ event: 'reader-failed', error: `api-error ${reply.status ?? 'no status'} ${reply.error}`, ms });
+    else row({ event: 'reader-unparsed', ms, error: reply.reason });
+    return undefined;
+  }
+  const p = parseReaderAnswer(reply.text);
+  if (p === undefined) {
+    row({ event: 'reader-unparsed', ms }, reply.text);
+    return undefined;
+  }
+  const level = decide(p);
+  const home = clamp(level, rt.config.floor, rt.config.ceiling);
+  row({ event: 'prompt', p: p.map((x) => Number(x.toFixed(3))), level, home, ms, usage: reply.usage }, reply.text);
+  return home;
+}
+
+// The main chat's request: the first of a turn sets its home (the reader's decision, else the level the request asks
+// for), every request goes at the controller's level. Undefined: send the request as it is.
+async function steerMain(rt: Runtime, $: EngineInterface, e: { turnId: string; model: string; effort?: unknown }): Promise<Effort | undefined> {
+  if (rt.config.mainChat === 'off') return undefined;
+  try {
+    await start(rt, $);
+    if (!isLevel(e.effort)) return undefined;
+    if (rt.main === undefined || e.turnId !== rt.mainTurn) {
+      rt.mainTurn = e.turnId;
+      const home = rt.turnHomes.get(e.turnId) ?? e.effort;
+      rt.turnHomes.clear();
+      if (rt.main === undefined) rt.main = newMain(rt, home);
+      else rt.main.setHome(home);
+    }
+    const out = rt.main.onRequest(e.model, e.effort);
+    perform(rt, $, rt.main, out.actions);
+    return out.send;
+  } catch (error) {
+    $.ui.log(`effort-live-control: steering the main chat failed: ${message(error)}; this request goes at ${String(e.effort)}`);
+    return undefined;
+  }
+}
+
 export const register: Register = (on: On, options: PluginOptions) => {
   const spawns = newSpawns();
   const { settings, errors } = resolveSettings(options as Record<string, unknown>);
@@ -364,12 +521,20 @@ export const register: Register = (on: On, options: PluginOptions) => {
     compiled: compile(settings),
     optionErrors: errors,
     logFile: '',
+    casebookPath: '',
+    casebookNote: undefined,
+    casebook: new CasebookCache(),
     pending: [],
     writing: Promise.resolve(),
     steered: new Map(),
     awaiting: new Map(),
     childOf: new Map(),
     buttons: new Map(),
+    main: undefined,
+    mainTurn: undefined,
+    waiting: [],
+    turnHomes: new Map(),
+    lastReply: undefined,
   };
 
   on('session.start', async ($, e, next) => {
@@ -410,9 +575,43 @@ export const register: Register = (on: On, options: PluginOptions) => {
     }
   });
 
+  // A new prompt of the main chat: the reader sets the turn's level before its first request. A message typed over a
+  // running turn makes no call.
+  on('prompt.submit', async ($, e, next) => {
+    // A prompt typed between turns, or typed over a running turn to wait for it (`wait`), starts its own turn. One
+    // delivered into the running turn does not.
+    if ((e.turnId === undefined || e.wait) && rt.config.mainChat === 'reader') {
+      let home: Effort | undefined;
+      try {
+        home = await readPrompt(rt, $, e.text);
+      } catch (error) {
+        $.ui.log(`effort-live-control: reading the prompt failed: ${message(error)}; this turn goes at the level its first request asks for`);
+      }
+      rt.waiting.push({ text: e.text, home });
+      if (rt.waiting.length > WAITING_MAX) rt.waiting.shift();
+    }
+    return next(e);
+  });
+
+  // The turn a prompt starts carries its text: that pairs the turn with the reader's decision for it.
+  on('turn.start', async ($, e, next) => {
+    const at = rt.waiting.findIndex((entry) => entry.text === e.text);
+    if (at >= 0) rt.turnHomes.set(e.turnId, (rt.waiting.splice(at, 1)[0] as { home: Effort | undefined }).home);
+    return next(e);
+  });
+
   on('turn.step', async function* ($, e, next) {
     const agentId = e.agentId;
-    if (agentId === undefined) return yield* next(e);
+    if (agentId === undefined) {
+      const sent = await steerMain(rt, $, e);
+      const result = yield* next(sent === undefined || sent === e.effort ? e : { ...e, effort: sent });
+      try {
+        rt.main?.onAnswer(result.answer);
+      } catch (error) {
+        $.ui.log(`effort-live-control: reading the main chat's reply failed: ${message(error)}; its last words are not kept`);
+      }
+      return result;
+    }
     let send = e.effort;
     let controller: Controller | undefined;
     try {
@@ -452,7 +651,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
         return { result: `Nothing changed: ${message(error)}` };
       }
     }
-    const controller = e.agentId === undefined ? undefined : rt.steered.get(e.agentId);
+    const controller = controllerOf(rt, e.agentId);
     if (!controller) return next(e);
     const result = await next(e);
     if (result.deny !== undefined) return result;
@@ -471,7 +670,10 @@ export const register: Register = (on: On, options: PluginOptions) => {
   // background work, is the same job resuming later: its pin stays.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e);
-    if (e.agentId === undefined) return result;
+    if (e.agentId === undefined) {
+      if (e.answer.trim() !== '') rt.lastReply = e.answer;
+      return result;
+    }
     try {
       const status = (await $.agent.list()).find((agent) => agent.id === e.agentId)?.status;
       if (isStillRunning(status)) return result;

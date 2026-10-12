@@ -723,3 +723,51 @@ describe('judge-busy', () => {
     expect(c.level).toBe('medium');
   });
 });
+
+describe('setHome (a new turn of the main chat)', () => {
+  it('main chat: outside a struggle the home is the level and the resting level', () => {
+    const c = make({ judge: false });
+    c.setHome('xhigh');
+    expect(c.onRequest('claude-opus-5-5', 'low').send).toBe('xhigh');
+    expect(c.base).toBe('xhigh');
+    c.setHome('high');
+    expect(c.onRequest('claude-opus-5-5', 'low').send).toBe('high');
+  });
+
+  it('main chat: the home is held within the range', () => {
+    const c = make({ judge: false });
+    c.setHome('low');
+    expect(c.level).toBe('medium');
+    c.setHome('max');
+    expect(c.level).toBe('xhigh');
+  });
+
+  it('main chat: an open struggle goes on across the new home and resolves to it', () => {
+    const c = make({ judge: false });
+    c.onTestRun(FAIL);
+    expect(c.level).toBe('high');
+    c.setHome('medium');
+    expect(c.level).toBe('high'); // the trouble is not over: a prompt only changes the home
+    expect(c.struggleOpen).toBe(true);
+    c.onTestRun(PASS);
+    expect(c.level).toBe('medium');
+  });
+
+  it('main chat: a new home above the raised level lifts it, and the struggle resolves to that home', () => {
+    const c = make({ judge: false });
+    c.onTestRun(FAIL);
+    c.setHome('xhigh');
+    expect(c.level).toBe('xhigh');
+    c.onTestRun(PASS);
+    expect(c.level).toBe('xhigh');
+  });
+
+  it('main chat: a failure streak continues into the next turn', () => {
+    const c = make({ judge: false });
+    c.onTestRun(FAIL);
+    c.setHome('high');
+    const out = c.onTestRun(FAIL);
+    expect(c.ownFails).toBe(2);
+    expect(rows(out, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail2', from: 'high', to: 'xhigh' }]);
+  });
+});

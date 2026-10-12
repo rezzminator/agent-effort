@@ -18,10 +18,17 @@ type Opts = {
   env?: Record<string, string>;
   /** Paths whose read throws. */
   broken?: string[];
+  /** The main loop's model, as `$.session.model()` answers. */
+  mainModel?: string;
+  /** The transcript `$.session.messages()` answers. */
+  messages?: Array<{ role: 'user' | 'assistant'; text: string }>;
+  /** Answers every model call at once (the prompt reader); without it a call waits in `judgeCalls`. */
+  reply?: (request: any) => unknown;
 };
 
 function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
   const files = new Map<string, string>(Object.entries(opts.files ?? {}));
+  const mtimes = new Map<string, number>();
   const env: Record<string, string> = { HOME: '/fixture-home/t', ...(opts.env ?? {}) };
   const judgeCalls: Array<{ request: any; resolve: (value: any) => void; reject: (error: unknown) => void }> = [];
   const registered: any[] = [];
@@ -56,16 +63,20 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
         if (text === undefined) throw new Error('ENOENT');
         return text;
       },
-      write: async (path: string, text: string) => void files.set(path, text),
+      write: async (path: string, text: string) => void (files.set(path, text), mtimes.set(path, (mtimes.get(path) ?? 0) + 1)),
+      stat: async (path: string) => {
+        if (!files.has(path)) throw new Error(`ENOENT: no such file or directory, stat '${path}'`);
+        return { kind: 'file', size: 0, mtimeMs: mtimes.get(path) ?? 0, isLink: false };
+      },
       list: async (dir: string) => [...files.keys()].filter((file) => file.startsWith(dir + '/')).map((file) => ({ name: file.slice(dir.length + 1), kind: 'file', size: 0, isLink: false })),
     },
     env: { get: async (name: string) => env[name] },
-    session: { cwd: async () => '/proj', id: async () => 'sess1' },
+    session: { cwd: async () => '/proj', id: async () => 'sess1', model: async () => opts.mainModel ?? 'claude-opus-5-5', messages: async () => opts.messages ?? [] },
     tool: {
       register: async (spec: any) => (registered.push(spec), { tool: `mcp__effort-live-control__${spec.name}` }),
     },
     model: {
-      complete: (request: any) => new Promise<any>((resolve, reject) => judgeCalls.push({ request, resolve, reject })),
+      complete: (request: any) => (opts.reply ? Promise.resolve(opts.reply(request)) : new Promise<any>((resolve, reject) => judgeCalls.push({ request, resolve, reject }))),
     },
   };
   (register as Hook)((name: string, fn: Hook) => hooks.set(name, fn), opts.options ?? {});
@@ -99,6 +110,41 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
     return s;
   }
 
+  /** The texts of the prompts that will start a turn, in the order the engine starts them. */
+  const submitted: string[] = [];
+  const started = new Set<string>();
+
+  /** One request of the main chat in turn `turnId`; a turn's first request is preceded by its turn.start. Resolves to the effort it was sent at. */
+  async function mainStep(effort: string | number | undefined, turnId = 't1', model = 'claude-opus-5-5'): Promise<string | undefined> {
+    if (!started.has(turnId)) {
+      started.add(turnId);
+      await hooks.get('turn.start')!($, { turnId, text: submitted.shift() ?? '' }, async (e: any) => ({ turnId: e.turnId }));
+    }
+    let sent: string | undefined;
+    const next = Object.assign(
+      async function* (e: any) {
+        sent = e.effort;
+        return { answer: '', toolUses: [] };
+      },
+      { signal: new AbortController().signal },
+    );
+    const gen = hooks.get('turn.step')!($, { turnId, index: 0, model, messageCount: 1, effort }, next);
+    for (let r = await gen.next(); !r.done; r = await gen.next());
+    return sent;
+  }
+
+  /** A prompt of the user's: `turnId` set means it was typed over a running turn, `wait` that it waits for that turn to end. */
+  const prompt = (text: string, turnId?: string, wait = false) => {
+    if (turnId === undefined || wait) submitted.push(text);
+    return hooks.get('prompt.submit')!($, { text, wait, origin: { kind: 'user' }, ...(turnId === undefined ? {} : { turnId }) }, async (e: any) => ({ text: e.text }));
+  };
+
+  /** The main chat's turn ends with `answer`. */
+  const completeMain = (answer: string, turnId = 't1') => hooks.get('turn.complete')!($, { answer, turnId, durationMs: 1, isAborted: false, reason: 'answer' }, async () => ({ text: '' }));
+
+  /** The file's mtime moves, as an edit does. */
+  const touch = async (path: string) => void mtimes.set(path, (mtimes.get(path) ?? 0) + 1);
+
   const complete = (agentId: string, answer = '') => hooks.get('turn.complete')!($, { agentId, answer }, async () => ({ text: '' }));
 
   /** One tool call of an agent; `result` is what the tool answers when next is called. */
@@ -119,7 +165,7 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
     const text = files.get('/fixture-home/t/.local/state/effort-live-control/decisions.sess1.jsonl') ?? '';
     return text.split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as Record<string, any>);
   };
-  return { state, statuses, step, spawn, spawned, complete, tool, sessionStart, describeTool, fireTimers, tick, logs, timers, files, judgeCalls, registered, rows };
+  return { state, statuses, touch, step, mainStep, prompt, completeMain, spawn, spawned, complete, tool, sessionStart, describeTool, fireTimers, tick, logs, timers, files, judgeCalls, registered, rows };
 }
 
 suite('agent.spawn', () => {
@@ -760,8 +806,8 @@ suite('test runs', () => {
     expect((await x.rows()).filter((row) => row.event === 'resolved')).toMatchObject([{ from: 'high', to: 'medium' }]);
   });
 
-  it('readerCommands: the option reaches the adapter, so an emptied list counts a grep as a test run', async () => {
-    const { x, run } = await withLead(LEAD, { judge: false, readerCommands: [] });
+  it('readOnlyCommands: the option reaches the adapter, so an emptied list counts a grep as a test run', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false, readOnlyCommands: [] });
     await run('grep -rn pytest .', 'FAIL a');
     expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
   });
@@ -1074,5 +1120,355 @@ suite('the decision log', () => {
     await x.spawned('Map X.', 'a1');
     await x.spawned('Map Y.', 'a2');
     expect(x.logs.filter((line) => line.includes('option "floor"'))).toEqual(['effort-live-control: option "floor" is "sideways", not a level (low, medium, high, xhigh, max); using the default "medium"']);
+  });
+});
+
+// ---- the main chat: the prompt reader sets the turn's level, tripwires steer it ----
+
+const say = (text: string) => ({ isAnswered: true, text, usage: USAGE });
+const CASEBOOK = '/fixture-home/t/.local/state/effort-live-control/casebook.jsonl';
+const caseLine = (r: Record<string, unknown> = {}) => JSON.stringify({ message: 'plan the cache layer', previous: 'ok', level: 'xhigh', note: 'a design', core: true, ...r });
+
+/** An engine whose model calls (the prompt reader's) are answered at once by `script.next`, each call recorded. */
+function withReader(options: Record<string, unknown> = {}, extra: Opts = {}) {
+  const calls: any[] = [];
+  const script = { next: (): unknown => say('0.05 0.90 0.05') };
+  const x = engine(new Map(), { ...extra, options, reply: (request) => (calls.push(request), script.next()) });
+  return { x, calls, script };
+}
+
+suite('main chat: the prompt reader', () => {
+  it('main chat: a new prompt calls the reader once, and the first request goes at its level', async () => {
+    const { x, calls } = withReader();
+    await x.prompt('please fix the flaky parser test');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ model: 'haiku', effort: 'xhigh', timeoutMs: 10000 });
+    expect(calls[0].prompt).toContain("User's new message: please fix the flaky parser test");
+    expect(calls[0].prompt).toContain("Agent's previous reply (end): (none: first message)");
+    expect(await x.mainStep('low')).toBe('high');
+    expect(await x.mainStep('low')).toBe('high');
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'prompt', agent: 'main', p: [0.05, 0.9, 0.05], level: 'high', home: 'high', casebook: 0, precedents: 0 }));
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'step', agent: 'main', requested: 'low', sent: 'high' }));
+  });
+
+  it('main chat: the reader call options come from promptModel, promptEffort and promptTimeoutMs', async () => {
+    const { x, calls } = withReader({ promptModel: 'sonnet', promptEffort: 'low', promptTimeoutMs: 2500 });
+    await x.prompt('go');
+    expect(calls[0]).toMatchObject({ model: 'sonnet', effort: 'low', timeoutMs: 2500 });
+  });
+
+  it("main chat: the previous reply is the end of the last turn's answer", async () => {
+    const { x, calls } = withReader();
+    await x.prompt('first');
+    await x.mainStep('medium');
+    await x.completeMain(`${'z'.repeat(300)} Shall I build it?`);
+    await x.prompt('go');
+    expect(calls[1].prompt).toContain(`Agent's previous reply (end): ${`${'z'.repeat(300)} Shall I build it?`.slice(-200)}\n`);
+  });
+
+  it('main chat: a reply from before the plugin loaded comes from the transcript', async () => {
+    const { x, calls } = withReader({}, { messages: [{ role: 'assistant', text: 'earlier answer' }, { role: 'user', text: 'ok' }, { role: 'assistant', text: '' }] });
+    await x.prompt('go');
+    expect(calls[0].prompt).toContain("Agent's previous reply (end): earlier answer\n");
+  });
+
+  it('main chat: a message sent mid-turn makes no call and keeps the level', async () => {
+    const { x, calls } = withReader();
+    await x.prompt('first');
+    expect(await x.mainStep('low', 't1')).toBe('high');
+    await x.prompt('and also this', 't1');
+    await x.prompt('and also that', 't1', false);
+    expect(calls).toHaveLength(1);
+    expect(await x.mainStep('low', 't1')).toBe('high');
+  });
+
+  it("main chat: a queued prompt (wait) makes one call at submit, against the reply known then, and its turn's first request goes at the decided level", async () => {
+    const { x, calls, script } = withReader();
+    await x.prompt('first');
+    expect(await x.mainStep('low', 't1')).toBe('high');
+    await x.completeMain('EARLIER-REPLY', 't1');
+    await x.prompt('second', undefined);
+    expect(await x.mainStep('low', 't2')).toBe('high');
+    script.next = () => say('0.90 0.05 0.05');
+    await x.prompt('then do this', 't2', true);
+    expect(calls).toHaveLength(3);
+    expect(calls[2].prompt).toContain("User's new message: then do this");
+    expect(calls[2].prompt).toContain("Agent's previous reply (end): EARLIER-REPLY\n");
+    expect(await x.mainStep('low', 't2')).toBe('high'); // the running turn keeps its own level
+    await x.completeMain('LATER-REPLY', 't2');
+    expect(await x.mainStep('low', 't3')).toBe('medium'); // the queued prompt's turn goes at its decision
+    expect(await x.mainStep('low', 't3')).toBe('medium');
+  });
+
+  it("main chat: two queued prompts each decide their own turn, in order", async () => {
+    const { x, script } = withReader();
+    await x.prompt('first');
+    await x.mainStep('low', 't1');
+    script.next = () => say('0.90 0.05 0.05');
+    await x.prompt('queued one', 't1', true);
+    script.next = () => say('0.0 0.1 0.9');
+    await x.prompt('queued two', 't1', true);
+    await x.completeMain('a', 't1');
+    expect(await x.mainStep('low', 't2')).toBe('medium');
+    await x.completeMain('b', 't2');
+    expect(await x.mainStep('low', 't3')).toBe('xhigh');
+  });
+
+  it('main chat: a queued prompt whose reader gave no decision starts its turn at the requested level', async () => {
+    const { x, script } = withReader();
+    await x.prompt('first');
+    await x.mainStep('low', 't1');
+    script.next = () => ({ isAnswered: false, reason: 'aborted', usage: USAGE });
+    await x.prompt('queued', 't1', true);
+    await x.completeMain('a', 't1');
+    expect(await x.mainStep('xhigh', 't2')).toBe('xhigh');
+  });
+
+  it('main chat: a timeout sends the requested level, with a reader-timeout row', async () => {
+    const { x, script } = withReader();
+    script.next = () => ({ isAnswered: false, reason: 'aborted', usage: USAGE });
+    await x.prompt('go');
+    expect(await x.mainStep('xhigh')).toBe('xhigh');
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'reader-timeout', agent: 'main', casebook: 0, precedents: 0 }));
+  });
+
+  it('main chat: an API error and a throw send the requested level, with a reader-failed row carrying the error', async () => {
+    const { x, script } = withReader();
+    script.next = () => ({ isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: USAGE });
+    await x.prompt('one');
+    expect(await x.mainStep('medium', 't1')).toBe('medium');
+    script.next = () => {
+      throw new Error('socket closed');
+    };
+    await x.prompt('two');
+    expect(await x.mainStep('xhigh', 't2')).toBe('xhigh');
+    const failed = (await x.rows()).filter((row) => row.event === 'reader-failed');
+    expect(failed.map((row) => row.error)).toEqual(['api-error 529 overloaded', 'threw: socket closed']);
+  });
+
+  it('main chat: an unparsable answer sends the requested level, with a reader-unparsed row', async () => {
+    const { x, script } = withReader();
+    script.next = () => say('high');
+    await x.prompt('go');
+    expect(await x.mainStep('xhigh')).toBe('xhigh');
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'reader-unparsed', agent: 'main' }));
+  });
+
+  it('main chat: the level is clamped into floor and ceiling, the row keeping both', async () => {
+    const low = withReader({ floor: 'high' });
+    low.script.next = () => say('0.9 0.05 0.05');
+    await low.x.prompt('go');
+    expect(await low.x.mainStep('low')).toBe('high');
+    expect(await low.x.rows()).toContainEqual(expect.objectContaining({ event: 'prompt', level: 'medium', home: 'high' }));
+    const high = withReader({ ceiling: 'high' });
+    high.script.next = () => say('0.0 0.1 0.9');
+    await high.x.prompt('go');
+    expect(await high.x.mainStep('low')).toBe('high');
+    expect(await high.x.rows()).toContainEqual(expect.objectContaining({ event: 'prompt', level: 'xhigh', home: 'high' }));
+  });
+
+  it('main chat: a model outside models is untouched, and the reader is not called for it', async () => {
+    const { x, calls } = withReader({}, { mainModel: 'claude-haiku-5-5' });
+    await x.prompt('go');
+    expect(calls).toHaveLength(0);
+    expect(await x.mainStep('low', 't1', 'claude-haiku-5-5')).toBe('low');
+    const gated = withReader();
+    await gated.x.prompt('go');
+    expect(await gated.x.mainStep('low', 't1', 'claude-haiku-5-5')).toBe('low');
+  });
+
+  it('main chat: a request with no effort of its own is passed through', async () => {
+    const { x } = withReader();
+    await x.prompt('go');
+    expect(await x.mainStep(undefined)).toBeUndefined();
+  });
+
+  it('main chat: the reader home lasts one turn; the next turn without a prompt goes at the requested level', async () => {
+    const { x } = withReader();
+    await x.prompt('go');
+    expect(await x.mainStep('low', 't1')).toBe('high');
+    expect(await x.mainStep('medium', 't2')).toBe('medium');
+  });
+});
+
+suite('main chat: the casebook', () => {
+  it('main chat: core rows and precedents are counted in the decision row', async () => {
+    const book = [caseLine(), caseLine({ message: 'fix the parser', level: 'high', core: false }), caseLine({ message: 'say hello', level: 'medium', core: false })].join('\n');
+    const { x, calls } = withReader({}, { files: { [CASEBOOK]: book } });
+    await x.prompt('fix the flaky parser');
+    expect(calls[0].prompt).toContain('# Casebook');
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'prompt', casebook: 1, precedents: 1 }));
+  });
+
+  it('main chat: a missing casebook is the state casebook 0, with nothing logged to the user', async () => {
+    const { x, calls } = withReader();
+    await x.prompt('go');
+    expect(calls[0].prompt).not.toContain('# Casebook');
+    const row = (await x.rows()).find((r) => r.event === 'prompt')!;
+    expect(row.casebook).toBe(0);
+    expect(row.casebookError).toBeUndefined();
+    expect(x.logs).toEqual([]);
+  });
+
+  it('main chat: an unreadable casebook runs without it, and the log and the row carry the error', async () => {
+    const { x } = withReader({}, { files: { [CASEBOOK]: caseLine() }, broken: [CASEBOOK] });
+    await x.prompt('go');
+    const row = (await x.rows()).find((r) => r.event === 'prompt')!;
+    expect(row.casebook).toBe(0);
+    expect(row.casebookError).toContain('EACCES');
+    expect(x.logs.join('\n')).toContain(`reading the casebook ${CASEBOOK} failed: EACCES`);
+  });
+
+  it('main chat: a malformed line is skipped, and one log line names the file and the line numbers', async () => {
+    const { x } = withReader({}, { files: { [CASEBOOK]: [caseLine(), 'not json', caseLine({ level: 'low' })].join('\n') } });
+    await x.prompt('go');
+    await x.prompt('again');
+    expect(x.logs.filter((line) => line.includes('casebook'))).toEqual([`effort-live-control: the casebook ${CASEBOOK} has malformed lines 2, 3; they are skipped`]);
+    expect((await x.rows()).find((r) => r.event === 'prompt')!.casebook).toBe(1);
+  });
+
+  it('main chat: the file is read once and again when its mtime changes', async () => {
+    const { x, calls } = withReader({}, { files: { [CASEBOOK]: caseLine() } });
+    await x.prompt('one');
+    await x.prompt('two');
+    expect(calls[1].prompt).toContain('C1.');
+    expect(calls[1].prompt).not.toContain('C2.');
+    x.files.set(CASEBOOK, caseLine() + '\n' + caseLine({ message: 'second core', level: 'medium' }));
+    await x.touch(CASEBOOK);
+    await x.prompt('three');
+    expect(calls[2].prompt).toContain('C2.');
+  });
+
+  it('main chat: casebookFile expands ~ and an empty one means no casebook', async () => {
+    const own = withReader({ casebookFile: '~/cases.jsonl' }, { files: { '/fixture-home/t/cases.jsonl': caseLine() } });
+    await own.x.prompt('go');
+    expect(own.calls[0].prompt).toContain('# Casebook');
+    const none = withReader({ casebookFile: '' }, { files: { [CASEBOOK]: caseLine() } });
+    await none.x.prompt('go');
+    expect(none.calls[0].prompt).not.toContain('# Casebook');
+    expect(none.x.logs).toEqual([]);
+  });
+});
+
+suite('main chat: tripwires mid-turn', () => {
+  const failing = (x: ReturnType<typeof engine>, text = 'FAIL a') => x.tool(undefined, 'Bash', { command: 'npm test' }, { result: {}, text, isError: false });
+
+  it('main chat: a failing Bash test run raises it, and a later passing run returns it to the home of the turn', async () => {
+    const { x, script } = withReader();
+    script.next = () => say('0.90 0.05 0.05');
+    await x.prompt('run the tests');
+    expect(await x.mainStep('high', 't1')).toBe('medium');
+    const { out } = await failing(x);
+    expect((out as any).context).toEqual([expect.stringContaining('your reasoning effort is now high')]);
+    expect(await x.mainStep('high', 't1')).toBe('high');
+    await failing(x, 'ok');
+    // a passing run resolves the struggle
+    expect(await x.mainStep('high', 't1')).toBe('medium');
+  });
+
+  it("main chat: a sub-agent's red return raises it, and a green one returns it home", async () => {
+    const { x, script } = withReader();
+    script.next = () => say('0.90 0.05 0.05');
+    await x.prompt('build it');
+    expect(await x.mainStep('high')).toBe('medium');
+    await x.spawned('Build X.', 'c1', { subagentType: 'general-purpose' });
+    x.statuses.set('c1', 'completed');
+    await x.complete('c1', 'BLOCKED builder: no access');
+    expect(await x.mainStep('high')).toBe('high');
+    await x.spawned('Build X again.', 'c2', { subagentType: 'general-purpose' });
+    x.statuses.set('c2', 'completed');
+    await x.complete('c2', 'DONE builder');
+    expect(await x.mainStep('high')).toBe('medium');
+  });
+
+  it('main chat: the trouble goes on across a new prompt, which only changes the home', async () => {
+    const { x, script } = withReader();
+    script.next = () => say('0.90 0.05 0.05');
+    await x.prompt('run the tests');
+    await x.mainStep('high', 't1');
+    await failing(x);
+    await x.completeMain('tests fail', 't1');
+    await x.prompt('try again');
+    expect(await x.mainStep('high', 't2')).toBe('high'); // still raised
+    await failing(x);
+    expect(await x.mainStep('high', 't2')).toBe('xhigh'); // the failure streak went on: the 2nd failing run
+    await failing(x, 'ok');
+    expect(await x.mainStep('high', 't2')).toBe('medium');
+  });
+
+  it('main chat: spawning a landing type does not lower it', async () => {
+    const { x, script } = withReader({}, { files: LEAD });
+    script.next = () => say('0.05 0.90 0.05');
+    await x.prompt('go');
+    await x.mainStep('medium');
+    await x.spawned('Land it.', 'c1', { subagentType: 'lander' });
+    expect(await x.mainStep('medium')).toBe('high');
+    expect((await x.rows()).filter((row) => row.event === 'landing')).toEqual([]);
+  });
+
+  it("main chat: the main chat's effort_up button works, and moves its level for the turn", async () => {
+    const { x, script } = withReader();
+    script.next = () => say('0.90 0.05 0.05');
+    await x.sessionStart();
+    await x.prompt('go');
+    expect(await x.mainStep('low')).toBe('medium');
+    const { out } = await x.tool(undefined, 'mcp__effort-live-control__effort_up', {});
+    expect((out as any).result).toContain('raised to high');
+    expect(await x.mainStep('low')).toBe('high');
+  });
+});
+
+suite('main chat: the modes', () => {
+  it('main chat: off changes nothing, and the button is refused', async () => {
+    const { x, calls } = withReader({ mainChat: 'off' });
+    await x.sessionStart();
+    await x.prompt('go');
+    expect(calls).toHaveLength(0);
+    expect(await x.mainStep('low')).toBe('low');
+    const { out } = await x.tool(undefined, 'mcp__effort-live-control__effort_up', {});
+    expect((out as any).result).toContain('Not available here');
+    expect((await x.rows()).filter((row) => row.agent === 'main' && ['step', 'prompt'].includes(row.event))).toEqual([]);
+    expect(await x.mainStep('high', 't2')).toBe('high');
+  });
+
+  it('main chat: tripwires makes no reader call, and its home is the level each request asks for', async () => {
+    const { x, calls } = withReader({ mainChat: 'tripwires' });
+    await x.prompt('go');
+    expect(calls).toHaveLength(0);
+    expect(await x.mainStep('high', 't1')).toBe('high');
+    expect(await x.mainStep('xhigh', 't2')).toBe('xhigh');
+    await x.tool(undefined, 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    expect(await x.mainStep('xhigh', 't2')).toBe('xhigh'); // already at the ceiling
+    expect(await x.mainStep('medium', 't3')).toBe('xhigh'); // the open struggle goes on into the next turn
+  });
+
+  it('main chat: tripwires raises a request from the level it asks for', async () => {
+    const { x } = withReader({ mainChat: 'tripwires' });
+    expect(await x.mainStep('medium', 't1')).toBe('medium');
+    await x.tool(undefined, 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    expect(await x.mainStep('medium', 't1')).toBe('high');
+  });
+
+  it('main chat: the log rows hold no prompt, reply or casebook text with logPackets off, and the packet with it on', async () => {
+    const book = caseLine({ message: 'CASEBOOK-SECRET', previous: 'CASEBOOK-PREV' });
+    const run = async (logPackets: boolean) => {
+      const { x } = withReader({ logPackets }, { files: { [CASEBOOK]: book } });
+      await x.prompt('first');
+      await x.mainStep('medium', 't1');
+      await x.completeMain('SECRET-REPLY');
+      await x.prompt('SECRET-PROMPT');
+      await x.mainStep('medium', 't2');
+      return JSON.stringify(await x.rows());
+    };
+    const quiet = await run(false);
+    for (const secret of ['SECRET-PROMPT', 'SECRET-REPLY', 'CASEBOOK-SECRET', 'CASEBOOK-PREV']) expect(quiet).not.toContain(secret);
+    const loud = await run(true);
+    expect(loud).toContain('SECRET-PROMPT');
+  });
+
+  it('main chat: sub-agents keep behaving as before with the main chat steered (positive control)', async () => {
+    const { x } = withReader();
+    await x.spawned('[effort: low]\nMap X.', 'a1');
+    expect(await x.step('a1', 'high')).toBe('low');
   });
 });

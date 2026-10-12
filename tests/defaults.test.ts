@@ -78,15 +78,15 @@ describe('plugin options', () => {
     }
   });
 
-  it('readerCommands: agrees across the code, the manifest and both READMEs', () => {
-    expect(DEFAULTS.readerCommands).toContain('grep');
-    expect(DEFAULTS.readerCommands).not.toContain('source');
-    expect(manifest.userConfig.readerCommands).toMatchObject({ type: 'string', multiple: true, default: DEFAULTS.readerCommands });
-    expect(manifest.userConfig.readerCommands.title.startsWith('readerCommands: ')).toBe(true);
+  it('readOnlyCommands: agrees across the code, the manifest and both READMEs', () => {
+    expect(DEFAULTS.readOnlyCommands).toContain('grep');
+    expect(DEFAULTS.readOnlyCommands).not.toContain('source');
+    expect(manifest.userConfig.readOnlyCommands).toMatchObject({ type: 'string', multiple: true, default: DEFAULTS.readOnlyCommands });
+    expect(manifest.userConfig.readOnlyCommands.title.startsWith('readOnlyCommands: ')).toBe(true);
     for (const [path, readme] of readmes) {
-      const row = readme.split('\n').find((line) => line.startsWith('| `readerCommands` |'));
+      const row = readme.split('\n').find((line) => line.startsWith('| `readOnlyCommands` |'));
       expect(row, path).toBeDefined();
-      for (const name of DEFAULTS.readerCommands) expect(row, `${path} ${name}`).toContain(`\`${name}\``);
+      for (const name of DEFAULTS.readOnlyCommands) expect(row, `${path} ${name}`).toContain(`\`${name}\``);
     }
   });
 

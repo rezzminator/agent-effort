@@ -93,6 +93,37 @@
       "default": 45000,
       "min": 1
     },
+    "mainChat": {
+      "type": "string",
+      "title": "mainChat: how the main chat is steered",
+      "description": "off: the main chat is untouched and the effort buttons refuse it. tripwires: it is steered like a steered agent, its home being the level each request asks for (your /effort): a failing test run of its own or a red sub-agent return raises it, and it returns once the trouble resolves. reader: as tripwires, and the prompt reader sets the turn's home at each new prompt. Only models listed in models are steered. Do not enable another plugin that steers the main chat at the same time.",
+      "default": "reader"
+    },
+    "casebookFile": {
+      "type": "string",
+      "title": "casebookFile: the prompt reader's casebook (JSONL)",
+      "description": "One past turn per line: {\"message\": text, \"previous\": text, \"level\": \"medium\"|\"high\"|\"xhigh\", \"note\": text, \"core\": true|false}. Core rows (at most 40) are always shown to the reader; the six other rows whose message is nearest to the new prompt (TF-IDF cosine) are shown as precedents. A leading ~ is your home directory. A missing file or an empty value runs the reader without a casebook; an unreadable file is reported in the log. A malformed line is skipped and named.",
+      "default": "~/.local/state/effort-live-control/casebook.jsonl"
+    },
+    "promptModel": {
+      "type": "string",
+      "title": "promptModel: the model that reads each prompt",
+      "description": "The model alias or id of the prompt reader call (one call per new prompt, with mainChat reader).",
+      "default": "haiku"
+    },
+    "promptEffort": {
+      "type": "string",
+      "title": "promptEffort: the prompt reader call's own effort",
+      "description": "The reasoning effort of the prompt reader call: low, medium, high, xhigh or max.",
+      "default": "xhigh"
+    },
+    "promptTimeoutMs": {
+      "type": "number",
+      "title": "promptTimeoutMs: milliseconds the prompt reader call may take",
+      "description": "A reader call that has not answered after this many milliseconds is dropped and the turn goes at the level its first request asks for. The first request waits for the reader, so keep it short.",
+      "default": 10000,
+      "min": 1
+    },
     "buttons": {
       "type": "boolean",
       "title": "buttons: give agents effort_up and effort_down tools",
@@ -108,7 +139,7 @@
     "testCommandPatterns": {
       "type": "string",
       "title": "testCommandPatterns: which commands are test runs (regular expressions)",
-      "description": "One regular expression per entry, matched case-sensitively against each command a foreground Bash call runs (never a heredoc body or a reader program's arguments, see readerCommands). A match makes the call a test run, counted as failing or passing; a background run counts neither way.",
+      "description": "One regular expression per entry, matched case-sensitively against each command a foreground Bash call runs (never a heredoc body or a read-only program's arguments, see readOnlyCommands). A match makes the call a test run, counted as failing or passing; a background run counts neither way.",
       "default": [
         "\\bgo\\s+(-C\\s+\\S+\\s+)?test\\b",
         "\\b(npm|pnpm|yarn|bun)\\s+(run\\s+)?test\\b",
@@ -130,9 +161,9 @@
       ],
       "multiple": true
     },
-    "readerCommands": {
+    "readOnlyCommands": {
       "type": "string",
-      "title": "readerCommands: programs that only read or print, so never run a test (names)",
+      "title": "readOnlyCommands: programs that only read or print, so never run a test (names)",
       "description": "One program name per entry. A command whose program is listed is skipped when a Bash call is checked for a test run, so grep, cat, echo or git naming a test command is not one. The Bash call is split at ; & | and newlines, heredoc bodies are dropped, and env, time, nice, nohup, sudo, command, exec and timeout are looked through. source and . are not listed because they execute.",
       "default": [
         "cat",

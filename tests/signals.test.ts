@@ -4,38 +4,38 @@ import { isTestCommand, isTestRun, returnLine, testOutcome, type ReturnWords } f
 
 const patterns = (list: string[]) => list.map((source) => new RegExp(source));
 const TEST = patterns(DEFAULTS.testCommandPatterns);
-const READERS = new Set(DEFAULTS.readerCommands);
+const READ_ONLY = new Set(DEFAULTS.readOnlyCommands);
 const FAIL = patterns(DEFAULTS.failurePatterns);
 const WORDS: ReturnWords = { red: DEFAULTS.redWords, green: DEFAULTS.greenWords };
 
 describe('isTestCommand', () => {
   it.each(['npm test', 'go test ./...', 'npx vitest run tests/a.test.ts', 'pytest -x', 'cargo test', 'make check', 'scripts/test-api.sh'])('R-5: %s is a test run', (command) => {
-    expect(isTestCommand(command, TEST, READERS)).toBe(true);
+    expect(isTestCommand(command, TEST, READ_ONLY)).toBe(true);
   });
 
   it.each(['cat README.md', 'git status', 'npm run build', 'grep -rn test src'])('R-5: %s is not', (command) => {
-    expect(isTestCommand(command, TEST, READERS)).toBe(false);
+    expect(isTestCommand(command, TEST, READ_ONLY)).toBe(false);
   });
 
   it('testCommandPatterns: python -m unittest and node --test count as test runs', () => {
     for (const command of ['python -m unittest', 'python3 -m unittest -v', 'python3.14 -m unittest discover', 'cd /tmp/x && python3 -m unittest -v 2>&1 | tail -5', 'node --test', 'node --test tests/', 'node --test-only']) {
-      expect(isTestCommand(command, TEST, READERS), command).toBe(true);
+      expect(isTestCommand(command, TEST, READ_ONLY), command).toBe(true);
     }
     for (const command of ['python3 script.py', 'python -m pip install unittest2', 'node index.js', 'node --inspect app.js']) {
-      expect(isTestCommand(command, TEST, READERS), command).toBe(false);
+      expect(isTestCommand(command, TEST, READ_ONLY), command).toBe(false);
     }
   });
 });
 
 describe('isTestRun', () => {
   it('R-5: a foreground Bash call whose command matches is a test run; its command is returned', () => {
-    expect(isTestRun('Bash', { command: 'npm test' }, TEST, READERS)).toBe('npm test');
+    expect(isTestRun('Bash', { command: 'npm test' }, TEST, READ_ONLY)).toBe('npm test');
   });
 
   it('R-5: a backgrounded run, another tool and a missing command are not', () => {
-    expect(isTestRun('Bash', { command: 'npm test', run_in_background: true }, TEST, READERS)).toBeUndefined();
-    expect(isTestRun('Read', { command: 'npm test' }, TEST, READERS)).toBeUndefined();
-    expect(isTestRun('Bash', {}, TEST, READERS)).toBeUndefined();
+    expect(isTestRun('Bash', { command: 'npm test', run_in_background: true }, TEST, READ_ONLY)).toBeUndefined();
+    expect(isTestRun('Read', { command: 'npm test' }, TEST, READ_ONLY)).toBeUndefined();
+    expect(isTestRun('Bash', {}, TEST, READ_ONLY)).toBeUndefined();
   });
 });
 
@@ -80,15 +80,15 @@ describe('test runs', () => {
     ['echo `grep pytest log`', false],
     ['foo $(grep pytest log)', false],
   ])('test runs: %j is a test run: %s', (command, expected) => {
-    expect(isTestCommand(command, TEST, READERS)).toBe(expected);
+    expect(isTestCommand(command, TEST, READ_ONLY)).toBe(expected);
   });
 
   it('test runs: a heredoc that mentions the test command is not a test run through isTestRun either', () => {
-    expect(isTestRun('Bash', { command: "cat > b.md <<'EOF'\npytest\nEOF" }, TEST, READERS)).toBeUndefined();
-    expect(isTestRun('Bash', { command: "cat > b.md <<'EOF'\nx\nEOF\npytest" }, TEST, READERS)).toBe("cat > b.md <<'EOF'\nx\nEOF\npytest");
+    expect(isTestRun('Bash', { command: "cat > b.md <<'EOF'\npytest\nEOF" }, TEST, READ_ONLY)).toBeUndefined();
+    expect(isTestRun('Bash', { command: "cat > b.md <<'EOF'\nx\nEOF\npytest" }, TEST, READ_ONLY)).toBe("cat > b.md <<'EOF'\nx\nEOF\npytest");
   });
 
-  it('readerCommands: a custom list replaces the default', () => {
+  it('readOnlyCommands: a custom list replaces the default', () => {
     expect(isTestCommand('grep -rn pytest .', TEST, new Set())).toBe(true);
     expect(isTestCommand('grep -rn pytest .', TEST, new Set(['grep']))).toBe(false);
     expect(isTestCommand('echo pytest', TEST, new Set(['grep']))).toBe(true);

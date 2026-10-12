@@ -225,13 +225,13 @@ function program(segment: string): { name: string; command: string } | undefined
  * split at unquoted `;`, `&`, `|` and newline, the commands inside `$( )` and backticks ahead of
  * the segment that holds them, each stripped of its leading `(`, `{`, `!`, keywords, assignments
  * and wrapper words, and left out when it is a loop or case header, a `command -v` lookup, or a
- * `readers` program.
+ * `readOnly` program.
  */
-export function runSegments(command: string, readers: ReadonlySet<string>): string[] {
+export function runSegments(command: string, readOnly: ReadonlySet<string>): string[] {
   const out: string[] = [];
   for (const segment of split(command)) {
     const found = program(segment.trim());
-    if (found && found.command !== '' && !readers.has(found.name)) out.push(found.command);
+    if (found && found.command !== '' && !readOnly.has(found.name)) out.push(found.command);
   }
   return out;
 }

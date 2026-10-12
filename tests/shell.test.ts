@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULTS } from '../plugins/effort-live-control/src/settings.ts';
 import { runSegments } from '../plugins/effort-live-control/src/shell.ts';
 
-const READERS = new Set(DEFAULTS.readerCommands);
-const segments = (command: string, readers: ReadonlySet<string> = READERS) => runSegments(command, readers);
+const READ_ONLY = new Set(DEFAULTS.readOnlyCommands);
+const segments = (command: string, readOnly: ReadonlySet<string> = READ_ONLY) => runSegments(command, readOnly);
 
 describe('runSegments', () => {
   it('heredocs: the body is dropped and the operator line stays', () => {
@@ -65,14 +65,14 @@ describe('runSegments', () => {
     expect(segments(command, new Set())).toEqual([expected]);
   });
 
-  it('readers: a segment whose program is a reader is skipped, by basename and unquoted', () => {
-    expect(segments('grep pytest x; /usr/bin/grep pytest y; "cat" pytest; env A=1 sudo -u ci git log; pytest', READERS)).toEqual(['pytest']);
-    expect(segments('source venv/bin/activate && . ./env.sh', READERS)).toEqual(['source venv/bin/activate', '. ./env.sh']);
+  it('read-only: a segment whose program is read-only is skipped, by basename and unquoted', () => {
+    expect(segments('grep pytest x; /usr/bin/grep pytest y; "cat" pytest; env A=1 sudo -u ci git log; pytest', READ_ONLY)).toEqual(['pytest']);
+    expect(segments('source venv/bin/activate && . ./env.sh', READ_ONLY)).toEqual(['source venv/bin/activate', '. ./env.sh']);
   });
 
-  it('readers: an empty command and an empty segment give nothing', () => {
-    expect(segments('', READERS)).toEqual([]);
-    expect(segments(' ;; && \n ', READERS)).toEqual([]);
+  it('read-only: an empty command and an empty segment give nothing', () => {
+    expect(segments('', READ_ONLY)).toEqual([]);
+    expect(segments(' ;; && \n ', READ_ONLY)).toEqual([]);
   });
 
   it('lookups: command -v and command -V name a program and run nothing, a plain command is a wrapper', () => {
@@ -116,8 +116,8 @@ describe('runSegments', () => {
     expect(segments('echo $(pytest -q', new Set())).toEqual(['pytest -q', 'echo $()']);
   });
 
-  it('substitution: its readers are skipped like any segment, and a holder that only assigns is no segment', () => {
-    expect(segments('x=$(cat log | grep pytest)', READERS)).toEqual([]);
-    expect(segments('echo "$(pytest -q | tail -1)"', READERS)).toEqual(['pytest -q']);
+  it('substitution: its read-only programs are skipped like any segment, and a holder that only assigns is no segment', () => {
+    expect(segments('x=$(cat log | grep pytest)', READ_ONLY)).toEqual([]);
+    expect(segments('echo "$(pytest -q | tail -1)"', READ_ONLY)).toEqual(['pytest -q']);
   });
 });

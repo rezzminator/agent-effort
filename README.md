@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-0.1.3-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-389%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-457%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -56,9 +56,11 @@ claude plugin uninstall effort-live-control@effort-live-control
 | --- | --- |
 | `tool.describe` | Appends the tag's usage to the Agent tool's description. |
 | `agent.spawn` | Reads the tag, the prompt's first non-blank text. An unknown level refuses the spawn, and the model sees why. A valid tag is removed from the prompt, so the sub-agent never sees it. Then reads the spawned type's definition: the tag pins, even over an `effort:` level the definition sets (a `tag` row says so); under `parentTag: ignore` that level pins instead and a `tag-ignored` row says so. The pin is recorded against the new sub-agent's id. A definition with `effortControl` on starts steering the agent. |
-| `turn.step` | Before each of that sub-agent's model requests, sets the request's `effort` to its pin: the tagged level, else the definition's level, or for an untagged sub-agent the effort of its first request. A steered agent gets its current live level instead. |
+| `turn.step` | The main chat's requests go at the turn's level ([Main chat](#-main-chat)). Before each of a sub-agent's model requests, sets the request's `effort` to its pin: the tagged level, else the definition's level, or for an untagged sub-agent the effort of its first request. A steered agent gets its current live level instead. |
 | `tool.call` | Reads a steered agent's own test runs, reads and messages; answers the `effort_up` and `effort_down` tools; carries a level change into the agent's next tool result. |
 | `turn.complete` | When a sub-agent finishes, clears its pin and drops its steering state. A finished child's last answer is read as a return by its steered parent. A run that ends while the agent still runs, or waits on its own background work (a child agent, a backgrounded shell, a monitor), keeps both. |
+| `prompt.submit` | With `mainChat: reader`, a prompt that starts a turn is read by one cheap model call before the turn's first request ([Main chat](#-main-chat)). A queued message is read at submit and its decision waits for its own turn; one delivered into the running turn makes no call. |
+| `turn.start` | Pairs the turn that starts with the decision made for its prompt (by the prompt's text). |
 | `session.start` | Registers the two button tools. |
 
 - The tag counts only as the prompt's first non-blank text, written on one line. `[effort: high]` later in the prompt is ordinary prose, and a markdown link `[effort: high](…)` is not a tag.
@@ -70,7 +72,7 @@ claude plugin uninstall effort-live-control@effort-live-control
 - Pins are held by Claude Code for the session and survive a plugin reload. A sub-agent resumed in a new session runs unpinned, at its own effort. Steering state lives in memory: a reload ends it, and the agent goes on at its pin.
 - A model that takes no effort setting (such as Haiku) is sent none, whatever the tag says.
 - Two requests made on a sub-agent's behalf are not pinned. Its compaction forks are loops no spawn names, so they keep the effort they carry. The agent panel's progress line for a background sub-agent comes from a separate short request Claude Code sends about every 30 seconds (`agent_summary`); it passes through no plugin hook, so it carries the effort the sub-agent's definition declares, never its tag's. The sub-agent's own requests are pinned.
-- Only sub-agents are affected. The main chat keeps `/effort`.
+- The main chat is steered separately, by `mainChat` ([Main chat](#-main-chat)); with `mainChat: off` only sub-agents are affected and the main chat keeps `/effort`.
 
 ## 🎚️ Live control
 
@@ -105,7 +107,7 @@ A steered agent starts at its **home** level: its tag, else its definition's `ef
 
 | Moment | What happens |
 | --- | --- |
-| The agent's own test run fails (the 1st failing run, the 2nd in a row, then every even count: 4th, 6th, …) | A **tripwire**: the level rises one step, or is judged when the judge is on. A test run is a foreground Bash call whose commands match `testCommandPatterns`: the patterns match only the commands a call runs, never a heredoc body, a search, an echo or another reader program (`readerCommands`), so a brief written with `cat <<'EOF'` that mentions `pytest` is not a test run; it fails when its result is an error or matches `failurePatterns`. |
+| The agent's own test run fails (the 1st failing run, the 2nd in a row, then every even count: 4th, 6th, …) | A **tripwire**: the level rises one step, or is judged when the judge is on. A test run is a foreground Bash call whose commands match `testCommandPatterns`: the patterns match only the commands a call runs, never a heredoc body, a search, an echo or another read-only program (`readOnlyCommands`), so a brief written with `cat <<'EOF'` that mentions `pytest` is not a test run; it fails when its result is an error or matches `failurePatterns`. |
 | A sub-agent returns a red line (`FAIL`, `FAILED`, `BLOCKED`, `PARTIAL`, `SPEC-DRIFT` first on a line of its final answer, or in a file the agent reads) | A tripwire, and that unit is marked red. A final answer counts on its token alone, in its first 15 lines, whatever follows (`DONE probe-unit (handoff skipped: no write tool)`); the unit is the name right after the token when a boundary follows it (the line's end, `.:,;!?)]`, or a space and a symbol such as `(`, `—` or a quote), else the child's type. A result the agent reads counts only as its first non-blank line, and only in that strict form: `DONE and dusted` is prose there. |
 | The agent sends a message to a red child, or spawns a type that has a red child | A tripwire (the red result is being sent back). |
 | A tripwire (one armed in `tripwires`; a disarmed one is only counted) | A struggle opens at the level the agent had outside trouble. With the judge off (the default), the level rises one step, up to the ceiling (`mechanical`). With it on, the judge is asked, detached: no request waits for it; requests go at the old level until it answers. A call already in flight for this struggle makes this tripwire a no-op (`judge-busy`); a call left over from a struggle that is over does not hold it: the level rises one step mechanically (`mechanical` with `busy: true`). |
@@ -118,9 +120,22 @@ A steered agent starts at its **home** level: its tag, else its definition's `ef
 
 **The judge** is off by default: with `judge: false`, every tripwire raises the effort one step. That is the measured better default. On 258 recorded tripwires from 147 orchestrator runs, a Haiku judge could not tell trouble that continues from trouble that ends (AUC 0.35 to 0.56 within each tripwire kind), and raising one step at every tripwire beat every judge variant on the replay loss (3 for a missed needed raise, 1 for an unneeded one): 0.283 against 0.517 for the best judge. Turn it on with the `judge` option, or per agent with `effortControl.judge: on`. When on, it is one `haiku` call per tripwire (`judgeModel`, `judgeEffort`, `judgeTimeoutMs`), 4000 tokens at most, and it estimates the probability that the trouble continues, starting from the rate measured for that tripwire kind: at or above `judgeRaiseAt` the effort rises one step, below it holds, and the judge never lowers it. It reads a snapshot of at most 2,500 characters: the agent's type, model, level and range, the tripwire, the opening 600 characters of its brief, its last 12 events (`test FAIL: …`, `return builder FAIL: …`, `sendmessage → …`, `spawn …`), the tail of the failing output or the head of the red return, and the tail of the agent's last words. It answers one line, `probability - reason`. Nothing else leaves the machine for the judge, and the snapshot is logged only with `logPackets`.
 
-**The buttons** are two tools every agent sees, `effort_up` and `effort_down`, with no parameters. A steered agent moves its own level one step (or hears that it is already at the bound of its range). Any other caller, the main chat included, is refused. `buttons: false` registers neither.
+**The buttons** are two tools every agent sees, `effort_up` and `effort_down`, with no parameters. A steered agent moves its own level one step (or hears that it is already at the bound of its range). The main chat moves its own level the same way unless `mainChat` is `off`; any other caller is refused. `buttons: false` registers neither.
 
 **Announcements** (`announce`): after any change of a steered agent's level, the agent's next tool result carries one line, `effort-live-control: your reasoning effort is now high — a failing test run.`, so the agent knows. A newer change replaces an undelivered one; a button press is answered by its own result instead.
+
+## 💬 Main chat
+
+`mainChat` steers the main chat too: `reader` (the default), `tripwires`, or `off`.
+
+- **At a prompt** (`reader`): a message that starts a turn is read by one cheap call (`promptModel` `haiku`, `promptEffort` `xhigh`, `promptTimeoutMs` 10 seconds) before the turn's first request. It sees the message (its first 400 characters), the end of the main chat's previous reply (its last 200), the casebook and the precedents. It answers three probabilities for `medium`, `high` and `xhigh`; the level of least expected loss (3 per level of too little effort, 1 per level of too much, after sharpening the probabilities with T = 0.3) becomes the turn's **home**, held within `floor`..`ceiling`. Every request of the turn goes at it, whatever `/effort` says. A message typed over a running turn to wait for it (queued) is read at once, against the reply known then, and its decision is the home of the turn it starts; one delivered into the running turn makes no call and keeps the level.
+- **Mid-turn**: the main chat has the tripwires of a steered agent. Its own failing Bash test run (`fail1`, `fail2`) and a sub-agent's red return (`red`, `redispatch`) raise it one step, and it returns to the turn's home once the trouble resolves. An open failure streak continues into the next turn, where a new prompt only changes the home. The landing rule does not apply, and `effort_up` and `effort_down` work for the main chat.
+- **On failure**: a timeout, an error or an answer with no three numbers sends the turn at the level its first request asks for (your `/effort`), and the log row says why: `reader-timeout`, `reader-failed` (with the error) or `reader-unparsed`. A model outside `models` is untouched and costs no call.
+- **`tripwires`** makes no reader call: the main chat's home is the level each request asks for, never changed at a prompt. **`off`** leaves the main chat untouched and the buttons refuse it.
+- **The casebook** (`casebookFile`) is JSONL, one past turn per line: `{"message": "…", "previous": "…", "level": "medium", "note": "…", "core": false}` with `level` one of `medium`, `high`, `xhigh`. Rows with `core: true` (at most 40) are always shown, sorted by level; the six other rows whose `message` is nearest to the new prompt by TF-IDF cosine are shown as precedents. The plugin ships none and writes none: without the file the reader runs on the prompt and the previous reply alone, and the row says `casebook: 0`. A malformed line is skipped and named in one log line; an unreadable file is reported in the log and in the row, never as "no casebook". The file is read once and again when it changes.
+- **Why**: on 272 prompts of one user's work, each labelled with the effort it needed, picking the level from design or architecture words did worse than always-high (an average loss of 0.743 and 0.790 against 0.710), while this reader at `xhigh` scored 0.351.
+- **One steerer at a time**: do not enable auto-effort together with this, because both steer the main chat's effort.
+- **What leaves the machine**: the message and the end of the previous reply go to the reader model, and the casebook rows it shows with them. The log holds no prompt or reply text unless `logPackets` is on.
 
 ## ⚙️ Options
 
@@ -138,20 +153,25 @@ Set under the plugin's settings. A bad value is reported once at the first hook 
 | `judgeModel` | `haiku` | The judge call's model. |
 | `judgeEffort` | `xhigh` | The judge call's own effort. |
 | `judgeTimeoutMs` | `45000` | Milliseconds before an unanswered judge call is dropped and the effort rises one step. |
+| `mainChat` | `reader` | Steering of the main chat: `off` leaves it untouched, `tripwires` steers it like a steered agent at the level each request asks for, `reader` also lets the prompt reader set the level at each new prompt ([Main chat](#-main-chat)). |
+| `casebookFile` | `~/.local/state/effort-live-control/casebook.jsonl` | The prompt reader's casebook, JSONL, one past turn per line; a leading `~` is your home directory; empty or missing: the reader runs without one. |
+| `promptModel` | `haiku` | The prompt reader's model. |
+| `promptEffort` | `xhigh` | The prompt reader call's own effort. |
+| `promptTimeoutMs` | `10000` | Milliseconds before an unanswered reader call is dropped and the turn goes at the level its first request asks for. |
 | `buttons` | `true` | Register the `effort_up` and `effort_down` tools. |
 | `announce` | `true` | Tell a steered agent, in its next tool result, when its effort changes. |
-| `testCommandPatterns` | `\bgo\s+(-C\s+\S+\s+)?test\b`<br>`\b(npm\|pnpm\|yarn\|bun)\s+(run\s+)?test\b`<br>`\bvitest\b`<br>`\bjest\b`<br>`\bpytest\b`<br>`\bpython(\d(\.\d+)?)?\s+-m\s+unittest\b`<br>`\bnode\s+(--test\|--test-only)\b`<br>`\bcargo\s+(test\|nextest)\b`<br>`\bmake\b[^;&\|\n]*?\b(test\|check\|verify)\b`<br>`\bjust\b[^;&\|\n]*?\b(test\|check)\b`<br>`\b(mvn\|gradle\|gradlew)\b[^;&\|\n]*?\btest\b`<br>`\bdotnet\s+test\b`<br>`\bdeno\s+test\b`<br>`\bswift\s+test\b`<br>`\bmix\s+test\b`<br>`\b(rspec\|phpunit\|ctest\|tox\|nox)\b`<br>`\bscripts?/test[\w.-]*\.sh\b` | Regular expressions (case-sensitive); a foreground Bash call is a test run when a command it runs matches any (never a heredoc body, see `readerCommands`). |
-| `readerCommands` | `cat`<br>`grep`<br>`egrep`<br>`fgrep`<br>`rg`<br>`ag`<br>`ack`<br>`echo`<br>`printf`<br>`sed`<br>`awk`<br>`head`<br>`tail`<br>`less`<br>`more`<br>`ls`<br>`find`<br>`fd`<br>`git`<br>`wc`<br>`which`<br>`type`<br>`man`<br>`file`<br>`stat`<br>`diff`<br>`jq`<br>`yq`<br>`sort`<br>`uniq`<br>`cut`<br>`tr`<br>`tee`<br>`test`<br>`[`<br>`[[`<br>`cd`<br>`pushd`<br>`popd`<br>`mkdir`<br>`rm`<br>`cp`<br>`mv`<br>`touch`<br>`chmod`<br>`ln`<br>`basename`<br>`dirname`<br>`realpath`<br>`readlink`<br>`date`<br>`sleep`<br>`true`<br>`false`<br>`export`<br>`read`<br>`wait`<br>`kill` | Program names whose commands never count as a test run, whatever they mention: a search, a print, a read, a file operation. A command is split at `;`, `&`, `\|` and newline, and only the segments whose program is not listed are matched against `testCommandPatterns`. `source` and `.` are not listed, because they execute. |
+| `testCommandPatterns` | `\bgo\s+(-C\s+\S+\s+)?test\b`<br>`\b(npm\|pnpm\|yarn\|bun)\s+(run\s+)?test\b`<br>`\bvitest\b`<br>`\bjest\b`<br>`\bpytest\b`<br>`\bpython(\d(\.\d+)?)?\s+-m\s+unittest\b`<br>`\bnode\s+(--test\|--test-only)\b`<br>`\bcargo\s+(test\|nextest)\b`<br>`\bmake\b[^;&\|\n]*?\b(test\|check\|verify)\b`<br>`\bjust\b[^;&\|\n]*?\b(test\|check)\b`<br>`\b(mvn\|gradle\|gradlew)\b[^;&\|\n]*?\btest\b`<br>`\bdotnet\s+test\b`<br>`\bdeno\s+test\b`<br>`\bswift\s+test\b`<br>`\bmix\s+test\b`<br>`\b(rspec\|phpunit\|ctest\|tox\|nox)\b`<br>`\bscripts?/test[\w.-]*\.sh\b` | Regular expressions (case-sensitive); a foreground Bash call is a test run when a command it runs matches any (never a heredoc body, see `readOnlyCommands`). |
+| `readOnlyCommands` | `cat`<br>`grep`<br>`egrep`<br>`fgrep`<br>`rg`<br>`ag`<br>`ack`<br>`echo`<br>`printf`<br>`sed`<br>`awk`<br>`head`<br>`tail`<br>`less`<br>`more`<br>`ls`<br>`find`<br>`fd`<br>`git`<br>`wc`<br>`which`<br>`type`<br>`man`<br>`file`<br>`stat`<br>`diff`<br>`jq`<br>`yq`<br>`sort`<br>`uniq`<br>`cut`<br>`tr`<br>`tee`<br>`test`<br>`[`<br>`[[`<br>`cd`<br>`pushd`<br>`popd`<br>`mkdir`<br>`rm`<br>`cp`<br>`mv`<br>`touch`<br>`chmod`<br>`ln`<br>`basename`<br>`dirname`<br>`realpath`<br>`readlink`<br>`date`<br>`sleep`<br>`true`<br>`false`<br>`export`<br>`read`<br>`wait`<br>`kill` | Program names whose commands never count as a test run, whatever they mention: a search, a print, a read, a file operation. A command is split at `;`, `&`, `\|` and newline, and only the segments whose program is not listed are matched against `testCommandPatterns`. `source` and `.` are not listed, because they execute. |
 | `failurePatterns` | `--- FAIL`<br>`FAIL(ED)?`<br>`(?<!\d)[1-9]\d* (failed\|failing)`<br>`AssertionError`<br>`panic:`<br>`Traceback` | Regular expressions (case-sensitive); a test run whose result is an error or matches any fails. |
 | `redWords` | `FAIL`<br>`FAILED`<br>`BLOCKED`<br>`PARTIAL`<br>`SPEC-DRIFT` | Words that open a failed return line. |
 | `greenWords` | `DONE`<br>`PASS`<br>`FIXED` | Words that open a return line that clears an earlier red one. |
 | `agentDirs` | *(none)* | Extra directories searched for agent definitions, after the project, config and home `.claude/agents`. |
 | `logFile` | `~/.local/state/effort-live-control/decisions.jsonl` | The decision log, one file per session (session id before the extension); a leading `~` is your home directory; empty turns it off. |
-| `logPackets` | `false` | Put the judge's snapshot and answer in its log rows. |
+| `logPackets` | `false` | Put the judge's and the prompt reader's snapshot and answer in their log rows. |
 
 ## 📜 Decision log
 
-`logFile` holds one JSONL file per session, the newest 5,000 rows. Every row has `ts`, `event`, `agent` (an id, or `main`) and `type`. Rows: `step` for every steered request (`model`, `requested`, `sent`, `struggle`), `tag` (`tag`, `effort`; `home` and `clamped` for a steered agent), `tag-ignored`, `judge` (`tripwire`, `p`, `from`, `to`, `reason`, `ms`, `usage`), `judge-failed`, `judge-stale`, `judge-busy`, `mechanical` (`tripwire`, `from`, `to`; `busy` when it replaced a stale judge call), `resolved`, `landing`, `button`, `button-refused`, `model-gated`, `not-steered`, `end`, and option, tool-registration and resolution errors. No prompt, brief or tool-result text is written, except the judge's `packet` and `answer` when `logPackets` is on.
+`logFile` holds one JSONL file per session, the newest 5,000 rows. Every row has `ts`, `event`, `agent` (an id, or `main`) and `type`. Rows: `step` for every steered request (`model`, `requested`, `sent`, `struggle`), `tag` (`tag`, `effort`; `home` and `clamped` for a steered agent), `tag-ignored`, `judge` (`tripwire`, `p`, `from`, `to`, `reason`, `ms`, `usage`), `judge-failed`, `judge-stale`, `judge-busy`, `mechanical` (`tripwire`, `from`, `to`; `busy` when it replaced a stale judge call), `resolved`, `landing`, `button`, `button-refused`, `model-gated`, `not-steered`, `end`, and option, tool-registration and resolution errors. The main chat adds `prompt` (`p`, `level`, `home`, `ms`, `usage`, `casebook`: core rows shown, `precedents`; `casebookError` when the file could not be read) and, when the reader gave no decision, `reader-timeout`, `reader-failed` (`error`), `reader-unparsed` and `reader-gated` (a model outside `models`); its steered requests are `step` rows with `agent: main`. No prompt, brief, reply or tool-result text is written, except the judge's and the reader's `packet` and `answer` when `logPackets` is on.
 
 ## ❓ FAQ
 
@@ -161,7 +181,7 @@ Set under the plugin's settings. A bad value is reported once at the first hook 
 
 **Does changing effort break the prompt cache?** A level change is a change in the request's effort, which Claude Code may price as a cache miss for that agent's next request. A raise happens at a tripwire, not at random.
 
-**Can the main chat set its own effort this way?** No; use `/effort`.
+**Can the main chat be steered this way?** Yes, by `mainChat` ([Main chat](#-main-chat)); `mainChat: off` leaves it to `/effort`.
 
 ## 🛠️ Development
 
@@ -183,6 +203,7 @@ A live run loads the checkout with `claude --plugin-dir plugins/effort-live-cont
 | `src/signals.ts` | Test runs, their outcome, and return lines |
 | `src/control.ts` | The per-agent controller: levels, struggles, tripwires, buttons, announcements |
 | `src/judge.ts` | The judge's prompt, the snapshot and the answer parser |
+| `src/reader.ts` | The prompt reader: its prompt, the casebook and its nearest precedents, the answer parser and the decision |
 | `src/text.ts` | The texts the model reads from the buttons and announcements |
 | `src/log.ts` | The decision log's file path and row cap |
 | `hooks/effort-live-control.ts` | The adapter: the hooks, host state and the log, and the only file that touches `$` |

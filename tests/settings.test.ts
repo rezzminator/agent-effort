@@ -29,7 +29,7 @@ describe('resolveSettings', () => {
     });
     expect(DEFAULTS.testCommandPatterns).toHaveLength(17);
     expect(DEFAULTS.failurePatterns).toHaveLength(6);
-    expect(SETTING_KEYS).toHaveLength(20);
+    expect(SETTING_KEYS).toHaveLength(25);
   });
 
   it('reads valid values of every kind', () => {
@@ -134,25 +134,55 @@ describe('parentTag option', () => {
   });
 });
 
-describe('readerCommands', () => {
-  it('readerCommands: the default names the programs that only read or print, and not the ones that execute', () => {
-    expect(DEFAULTS.readerCommands).toEqual(expect.arrayContaining(['cat', 'grep', 'echo', 'git', 'sed', '[', '[[', 'cd', 'sleep', 'kill']));
-    expect(DEFAULTS.readerCommands).not.toContain('source');
-    expect(DEFAULTS.readerCommands).not.toContain('.');
-    expect(DEFAULTS.readerCommands).toHaveLength(new Set(DEFAULTS.readerCommands).size);
+describe('readOnlyCommands', () => {
+  it('readOnlyCommands: the default names the programs that only read or print, and not the ones that execute', () => {
+    expect(DEFAULTS.readOnlyCommands).toEqual(expect.arrayContaining(['cat', 'grep', 'echo', 'git', 'sed', '[', '[[', 'cd', 'sleep', 'kill']));
+    expect(DEFAULTS.readOnlyCommands).not.toContain('source');
+    expect(DEFAULTS.readOnlyCommands).not.toContain('.');
+    expect(DEFAULTS.readOnlyCommands).toHaveLength(new Set(DEFAULTS.readOnlyCommands).size);
   });
 
-  it('readerCommands: a custom list replaces the default', () => {
-    expect(resolveSettings({ readerCommands: ['grep', 'cat'] })).toEqual({ settings: { ...DEFAULTS, readerCommands: ['grep', 'cat'] }, errors: [] });
-    expect(resolveSettings({ readerCommands: 'grep\ncat' }).settings.readerCommands).toEqual(['grep', 'cat']);
+  it('readOnlyCommands: a custom list replaces the default', () => {
+    expect(resolveSettings({ readOnlyCommands: ['grep', 'cat'] })).toEqual({ settings: { ...DEFAULTS, readOnlyCommands: ['grep', 'cat'] }, errors: [] });
+    expect(resolveSettings({ readOnlyCommands: 'grep\ncat' }).settings.readOnlyCommands).toEqual(['grep', 'cat']);
   });
 
-  it.each([['two words', ['cat', 'two words']], ['', ['cat', '']], ['tab\there', ['tab\there']]])('readerCommands: a bad item is reported and the default applies (%j)', (_label, raw) => {
-    const { settings, errors } = resolveSettings({ readerCommands: raw });
-    expect(settings.readerCommands).toEqual(DEFAULTS.readerCommands);
+  it.each([['two words', ['cat', 'two words']], ['', ['cat', '']], ['tab\there', ['tab\there']]])('readOnlyCommands: a bad item is reported and the default applies (%j)', (_label, raw) => {
+    const { settings, errors } = resolveSettings({ readOnlyCommands: raw });
+    expect(settings.readOnlyCommands).toEqual(DEFAULTS.readOnlyCommands);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain('option "readerCommands"');
+    expect(errors[0]).toContain('option "readOnlyCommands"');
     expect(errors[0]).toContain(JSON.stringify(raw));
+  });
+});
+
+describe('main chat options', () => {
+  it('mainChat, casebookFile, promptModel, promptEffort and promptTimeoutMs hold their defaults', () => {
+    expect(DEFAULTS).toMatchObject({
+      mainChat: 'reader',
+      casebookFile: '~/.local/state/effort-live-control/casebook.jsonl',
+      promptModel: 'haiku',
+      promptEffort: 'xhigh',
+      promptTimeoutMs: 10000,
+    });
+  });
+
+  it('reads valid values', () => {
+    const raw = { mainChat: 'tripwires', casebookFile: '/x/cases.jsonl', promptModel: 'sonnet', promptEffort: 'low', promptTimeoutMs: '3000' };
+    expect(resolveSettings(raw)).toEqual({ settings: { ...DEFAULTS, ...raw, promptTimeoutMs: 3000 }, errors: [] });
+    expect(resolveSettings({ mainChat: 'off' }).settings.mainChat).toBe('off');
+  });
+
+  it.each([
+    ['mainChat', 'sometimes', 'not off, tripwires or reader'],
+    ['casebookFile', 3, 'not text'],
+    ['promptModel', 'two words', 'not a model alias or id (text without spaces)'],
+    ['promptEffort', 'ultra', 'not a level (low, medium, high, xhigh, max)'],
+    ['promptTimeoutMs', 0, 'not a whole number of at least 1'],
+  ])('%s: a bad value is reported by key and value and the default applies', (key, value, why) => {
+    const { settings, errors } = resolveSettings({ [key]: value });
+    expect(settings[key as keyof typeof DEFAULTS]).toEqual(DEFAULTS[key as keyof typeof DEFAULTS]);
+    expect(errors).toEqual([`effort-live-control: option "${key}" is ${JSON.stringify(value)}, ${why}; using the default ${JSON.stringify(DEFAULTS[key as keyof typeof DEFAULTS])}`]);
   });
 });
 
@@ -162,6 +192,6 @@ describe('compile', () => {
     expect(compiled.testCommand).toHaveLength(17);
     expect(compiled.failure).toHaveLength(6);
     expect(compiled.testCommand.every((re) => re instanceof RegExp)).toBe(true);
-    expect(compiled.readers).toEqual(new Set(DEFAULTS.readerCommands));
+    expect(compiled.readOnly).toEqual(new Set(DEFAULTS.readOnlyCommands));
   });
 });
