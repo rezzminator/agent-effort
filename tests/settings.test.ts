@@ -26,7 +26,7 @@ describe('resolveSettings', () => {
       logPackets: false,
       tripwires: 'fail1,fail2,red,redispatch',
     });
-    expect(DEFAULTS.testCommandPatterns).toHaveLength(15);
+    expect(DEFAULTS.testCommandPatterns).toHaveLength(17);
     expect(DEFAULTS.failurePatterns).toHaveLength(6);
     expect(SETTING_KEYS).toHaveLength(18);
   });
@@ -120,7 +120,7 @@ describe('tripwires option', () => {
 describe('compile', () => {
   it('turns the patterns into regular expressions', () => {
     const compiled = compile(DEFAULTS);
-    expect(compiled.testCommand).toHaveLength(15);
+    expect(compiled.testCommand).toHaveLength(17);
     expect(compiled.failure).toHaveLength(6);
     expect(compiled.testCommand.every((re) => re instanceof RegExp)).toBe(true);
   });

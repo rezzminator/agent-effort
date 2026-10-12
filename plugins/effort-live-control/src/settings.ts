@@ -45,6 +45,8 @@ export const DEFAULTS: Settings = {
     '\\bvitest\\b',
     '\\bjest\\b',
     '\\bpytest\\b',
+    '\\bpython(\\d(\\.\\d+)?)?\\s+-m\\s+unittest\\b',
+    '\\bnode\\s+(--test|--test-only)\\b',
     '\\bcargo\\s+(test|nextest)\\b',
     '\\bmake\\b[^;&|\\n]*?\\b(test|check|verify)\\b',
     '\\bjust\\b[^;&|\\n]*?\\b(test|check)\\b',

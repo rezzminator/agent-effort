@@ -15,6 +15,15 @@ describe('isTestCommand', () => {
   it.each(['cat README.md', 'git status', 'npm run build', 'grep -rn test src'])('R-5: %s is not', (command) => {
     expect(isTestCommand(command, TEST)).toBe(false);
   });
+
+  it('testCommandPatterns: python -m unittest and node --test count as test runs', () => {
+    for (const command of ['python -m unittest', 'python3 -m unittest -v', 'python3.14 -m unittest discover', 'cd /tmp/x && python3 -m unittest -v 2>&1 | tail -5', 'node --test', 'node --test tests/', 'node --test-only']) {
+      expect(isTestCommand(command, TEST), command).toBe(true);
+    }
+    for (const command of ['python3 script.py', 'python -m pip install unittest2', 'node index.js', 'node --inspect app.js']) {
+      expect(isTestCommand(command, TEST), command).toBe(false);
+    }
+  });
 });
 
 describe('isTestRun', () => {

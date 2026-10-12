@@ -5,6 +5,7 @@ Every release of effort-live-control (named agent-effort through 0.1.3). Version
 ## [Unreleased]
 
 ### Added
+- The default `testCommandPatterns` count `python -m unittest` (also `python3`, `python3.14`) and `node --test` (also `--test-only`) as test runs.
 - The `tripwires` option (default `fail1,fail2,red,redispatch`) and the per-agent `effortControl.tripwires`: a comma list of the armed tripwires, empty arms none; a disarmed one is still counted but opens no struggle and raises nothing. Why, measured over 147 orchestrator runs: the first-failure tripwire raises 18.3% of requests above home against 9.8% without it, and covers 92.3% of struggle requests against 78.0%, so an agent that writes its tests first may turn `fail1` off.
 - The `judgeRaiseAt` option (0 to 100, default 25): with the judge on, a probability at or above it raises the effort one step; below it the effort holds. The judge never lowers.
 - Live effort control. An agent definition with `effortControl` (bare `on`, or nested `floor`, `ceiling`, `landing`, `judge`, `enabled`) is steered: its requests go at a level that rises at a tripwire (its own test run failing, a sub-agent returning `FAIL`, `FAILED`, `BLOCKED`, `PARTIAL` or `SPEC-DRIFT`, a red result sent back to a sub-task) and returns to the level it had once a test run passes and no unit is red. With the judge on, one Haiku call per tripwire (never awaited, so no request waits) estimates the probability that the trouble continues; a call that times out, fails or answers off-format raises one step instead.
