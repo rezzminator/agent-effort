@@ -1,4 +1,4 @@
-import { isEffort, LEVELS, type Effort } from './effort.ts';
+import { isEffort, isParentTag, LEVELS, type Effort, type ParentTag } from './effort.ts';
 import { parseFrontmatter } from './frontmatter.ts';
 import { parseTripwires, type Tripwire } from './judge.ts';
 import { rank } from './ladder.ts';
@@ -22,7 +22,7 @@ export type ControlConfig = {
 };
 
 /** The option values a frontmatter key falls back to. */
-export type ControlDefaults = { floor: Effort; ceiling: Effort; judge: boolean; tripwires: readonly Tripwire[] };
+export type ControlDefaults = { floor: Effort; ceiling: Effort; judge: boolean; tripwires: readonly Tripwire[]; parentTag: ParentTag };
 
 export type Definition = {
   /** The definition file, or undefined when the type has none (or it could not be read). */
@@ -31,11 +31,11 @@ export type Definition = {
   effort: Effort | undefined;
   /** Undefined when steering is off, absent or unreadable. */
   control: ControlConfig | undefined;
+  /** Whether a tag wins over this type's `effort:`: its `effortControl.parentTag`, else the option; read even when steering is off. */
+  parentTag: ParentTag;
   /** Every line logged while resolving this type. */
   errors: string[];
 };
-
-const NONE: Omit<Definition, 'errors'> = { path: undefined, effort: undefined, control: undefined };
 
 function join(dir: string, name: string): string {
   return dir.endsWith('/') ? dir + name : `${dir}/${name}`;
@@ -93,7 +93,7 @@ export class Definitions {
       }
       if (!found) continue;
       const fields = await this.fields(path, type, report);
-      if (fields === 'failed') return { ...NONE, errors };
+      if (fields === 'failed') return this.none(errors);
       if (!fields.name || fields.name === type) return this.fromFields(type, path, fields, errors, report);
     }
     const byName = (await this.index(report)).get(type);
@@ -101,13 +101,28 @@ export class Definitions {
       const fields = await this.fields(byName, type, report);
       if (fields !== 'failed') return this.fromFields(type, byName, fields, errors, report);
     }
-    return { ...NONE, errors };
+    return this.none(errors);
+  }
+
+  private none(errors: string[]): Definition {
+    return { path: undefined, effort: undefined, control: undefined, parentTag: this.defaults.parentTag, errors };
   }
 
   private fromFields(type: string, path: string, fields: Record<string, string>, errors: string[], report: (line: string) => void): Definition {
     const level = (fields.effort ?? '').trim().toLowerCase();
     const effort = isEffort(level) ? level : undefined;
-    return { path, effort, control: this.control(type, path, fields, report), errors };
+    return { path, effort, control: this.control(type, path, fields, report), parentTag: this.parentTag(type, path, fields, report), errors };
+  }
+
+  /** `effortControl.parentTag` over the option; read whether or not the type is steered. */
+  private parentTag(type: string, path: string, fields: Record<string, string>, report: (line: string) => void): ParentTag {
+    const fallback = this.defaults.parentTag;
+    const raw = fields['effortControl.parentTag'];
+    if (raw === undefined) return fallback;
+    const value = raw.trim().toLowerCase();
+    if (isParentTag(value)) return value;
+    report(`effort-live-control: ${path} effortControl.parentTag for ${type} is invalid (not honor or ignore); using ${fallback}`);
+    return fallback;
   }
 
   private control(type: string, path: string, fields: Record<string, string>, report: (line: string) => void): ControlConfig | undefined {
@@ -123,7 +138,8 @@ export class Definitions {
       }
       return on ? { floor: defaultFloor, ceiling: defaultCeiling, landing: [], judge: defaultJudge, tripwires: [...defaultTripwires] } : undefined;
     }
-    if (!Object.keys(fields).some((key) => key.startsWith('effortControl.'))) return undefined;
+    // `parentTag` steers nothing: alone it pins a type without turning steering on.
+    if (!Object.keys(fields).some((key) => key.startsWith('effortControl.') && key !== 'effortControl.parentTag')) return undefined;
 
     const level = (key: 'floor' | 'ceiling', fallback: Effort): Effort => {
       const raw = fields[`effortControl.${key}`];

@@ -65,6 +65,19 @@ describe('plugin options', () => {
     }
   });
 
+  it('parentTag: the default is honor in the code, the manifest and both READMEs', () => {
+    expect(DEFAULTS.parentTag).toBe('honor');
+    expect(manifest.userConfig.parentTag).toMatchObject({ type: 'string', default: 'honor' });
+    expect(manifest.userConfig.parentTag.multiple).toBeUndefined();
+    expect(manifest.userConfig.parentTag.description).toContain('ignore');
+    for (const [path, readme] of readmes) {
+      const row = readme.split('\n').find((line) => line.startsWith('| `parentTag` |'));
+      expect(row, path).toContain('| `honor` |');
+      expect(row, path).toContain('`ignore`');
+      expect(readme, path).toContain('`effortControl.parentTag`');
+    }
+  });
+
   it('keeps the two READMEs\' option tables identical', () => {
     const table = (text: string) => text.split('\n').filter((line) => SETTING_KEYS.some((key) => line.startsWith(`| \`${key}\` |`)));
     expect(table(readmes[1]![1])).toEqual(table(readmes[0]![1]));

@@ -280,8 +280,8 @@ async function withLead(files: Record<string, string> = LEAD, options: Record<st
 suite('definition effort over the tag', () => {
   const files = agentFile('builder', 'effort: High');
 
-  it("R-1: a definition effort wins over the tag: the tag is stripped, ignored, and the pin is the definition's level", async () => {
-    const x = engine(new Map(), { files });
+  it("R-1: under parentTag ignore a definition effort wins over the tag: the tag is stripped, ignored, and the pin is the definition's level", async () => {
+    const x = engine(new Map(), { files, options: { parentTag: 'ignore' } });
     const s = await x.spawned('[effort: low]\nMap X.', 'a1', { subagentType: 'builder' });
     expect(s.prompt()).toBe('Map X.');
     expect(await x.step('a1', 'medium')).toBe('high');
@@ -330,24 +330,153 @@ suite('definition effort over the tag', () => {
 
   it('finds a definition in the home directory and in CLAUDE_CONFIG_DIR', async () => {
     const x = engine(new Map(), { files: { '/home/t/.claude/agents/h.md': '---\nname: h\neffort: max\n---\n', '/cfg/agents/c.md': '---\nname: c\neffort: low\n---\n' }, env: { CLAUDE_CONFIG_DIR: '/cfg' } });
-    await x.spawned('[effort: medium]\nGo.', 'a1', { subagentType: 'h' });
-    await x.spawned('[effort: high]\nGo.', 'a2', { subagentType: 'c' });
+    await x.spawned('Go.', 'a1', { subagentType: 'h' });
+    await x.spawned('Go.', 'a2', { subagentType: 'c' });
     expect(await x.step('a1', 'high')).toBe('max');
     expect(await x.step('a2', 'high')).toBe('low');
   });
 
   it('finds a definition in an agentDirs directory', async () => {
     const x = engine(new Map(), { files: { '/extra/e.md': '---\nname: e\neffort: max\n---\n' }, options: { agentDirs: ['/extra'] } });
-    await x.spawned('[effort: low]\nGo.', 'a1', { subagentType: 'e' });
+    await x.spawned('Go.', 'a1', { subagentType: 'e' });
     expect(await x.step('a1', 'high')).toBe('max');
   });
 });
 
+suite('parentTag', () => {
+  const steered = agentFile('lead', 'effort: high\neffortControl: on');
+  const own = agentFile('builder', 'effort: high');
+  const tagRows = async (x: ReturnType<typeof engine>) => (await x.rows()).filter((row) => row.event === 'tag' || row.event === 'tag-ignored');
+
+  it("parentTag: a tag on a type with its own effort sets a steered agent's home", async () => {
+    const x = engine(new Map(), { files: steered });
+    const s = await x.spawned('[effort: medium]\nBuild X.', 'L1', { subagentType: 'lead' });
+    expect(s.prompt()).toBe('Build X.');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    expect(await x.step('L1', 'high', undefined, OPUS)).toBe('medium');
+    const rows = await tagRows(x);
+    expect(rows).toEqual([expect.objectContaining({ event: 'tag', agent: 'L1', type: 'lead', tag: 'medium', effort: 'high', home: 'medium' })]);
+    expect(rows[0]).not.toHaveProperty('clamped');
+  });
+
+  it('parentTag: the home is clamped into floor and ceiling', async () => {
+    const x = engine(new Map(), { files: steered });
+    await x.spawned('[effort: low]\nBuild X.', 'L1', { subagentType: 'lead' });
+    await x.spawned('[effort: max]\nBuild X.', 'L2', { subagentType: 'lead' });
+    expect(await x.step('L1', 'high', undefined, OPUS)).toBe('medium');
+    expect(await x.step('L2', 'high', undefined, OPUS)).toBe('xhigh');
+    expect(await tagRows(x)).toEqual([
+      expect.objectContaining({ event: 'tag', agent: 'L1', tag: 'low', effort: 'high', home: 'medium', clamped: true }),
+      expect.objectContaining({ event: 'tag', agent: 'L2', tag: 'max', effort: 'high', home: 'xhigh', clamped: true }),
+    ]);
+  });
+
+  it("parentTag: the home is clamped into the agent's own range, and into the range of a type without effort", async () => {
+    const x = engine(new Map(), { files: { ...agentFile('narrow', 'effort: high\neffortControl:\n  floor: high\n  ceiling: high'), ...agentFile('plain', 'effortControl: on') } });
+    await x.spawned('[effort: low]\nGo.', 'N1', { subagentType: 'narrow' });
+    await x.spawned('[effort: low]\nGo.', 'P1', { subagentType: 'plain' });
+    expect(await x.step('N1', 'max', undefined, OPUS)).toBe('high');
+    expect(await x.step('P1', 'max', undefined, OPUS)).toBe('medium');
+    expect(await tagRows(x)).toEqual([
+      expect.objectContaining({ agent: 'N1', tag: 'low', effort: 'high', home: 'high', clamped: true }),
+      expect.objectContaining({ agent: 'P1', tag: 'low', effort: null, home: 'medium', clamped: true }),
+    ]);
+  });
+
+  it('parentTag: a tag on an unsteered type with its own effort pins its requests', async () => {
+    for (const files of [own, agentFile('builder', 'effort: high\neffortControl: off')]) {
+      const x = engine(new Map(), { files });
+      const s = await x.spawned('[effort: low]\nMap X.', 'a1', { subagentType: 'builder' });
+      expect(s.prompt()).toBe('Map X.');
+      expect(await x.step('a1', 'medium')).toBe('low');
+      expect(await x.step('a1', 'max')).toBe('low');
+      const rows = await tagRows(x);
+      expect(rows).toEqual([expect.objectContaining({ event: 'tag', agent: 'a1', type: 'builder', tag: 'low', effort: 'high' })]);
+      expect(rows[0]).not.toHaveProperty('home');
+    }
+  });
+
+  it("parentTag: ignore keeps the definition's effort and logs tag-ignored, as the option", async () => {
+    for (const files of [own, steered]) {
+      const x = engine(new Map(), { files, options: { parentTag: 'ignore' } });
+      const type = files === own ? 'builder' : 'lead';
+      await x.spawned('[effort: low]\nGo.', 'a1', { subagentType: type });
+      expect(await x.step('a1', 'medium', undefined, OPUS)).toBe('high');
+      expect(await x.step('a1', 'low', undefined, OPUS)).toBe('high');
+      expect(await tagRows(x)).toEqual([expect.objectContaining({ event: 'tag-ignored', agent: 'a1', type, tag: 'low', effort: 'high' })]);
+    }
+  });
+
+  it("parentTag: ignore keeps the definition's effort and logs tag-ignored, as frontmatter, even with effortControl off", async () => {
+    const files = { ...agentFile('pinned', 'effort: high\neffortControl:\n  enabled: off\n  parentTag: ignore'), ...agentFile('lead', 'effort: high\neffortControl:\n  parentTag: ignore\n  floor: medium') };
+    const x = engine(new Map(), { files });
+    await x.spawned('[effort: low]\nGo.', 'a1', { subagentType: 'pinned' });
+    await x.spawned('[effort: low]\nGo.', 'a2', { subagentType: 'lead' });
+    expect(await x.step('a1', 'medium')).toBe('high');
+    expect(await x.step('a2', 'medium', undefined, OPUS)).toBe('high');
+    expect(await tagRows(x)).toEqual([
+      expect.objectContaining({ event: 'tag-ignored', agent: 'a1', type: 'pinned', tag: 'low', effort: 'high' }),
+      expect.objectContaining({ event: 'tag-ignored', agent: 'a2', type: 'lead', tag: 'low', effort: 'high' }),
+    ]);
+  });
+
+  it('parentTag: frontmatter honor overrides the option ignore', async () => {
+    const x = engine(new Map(), { files: agentFile('builder', 'effort: high\neffortControl:\n  enabled: off\n  parentTag: honor'), options: { parentTag: 'ignore' } });
+    await x.spawned('[effort: low]\nGo.', 'a1', { subagentType: 'builder' });
+    expect(await x.step('a1', 'medium')).toBe('low');
+    expect(await tagRows(x)).toEqual([expect.objectContaining({ event: 'tag', agent: 'a1', tag: 'low', effort: 'high' })]);
+  });
+
+  it("parentTag: an untagged spawn keeps the definition's effort", async () => {
+    for (const parentTag of ['honor', 'ignore']) {
+      const x = engine(new Map(), { files: { ...own, ...steered }, options: { parentTag } });
+      await x.spawned('Go.', 'a1', { subagentType: 'builder' });
+      await x.spawned('Go.', 'L1', { subagentType: 'lead' });
+      expect(await x.step('a1', 'low')).toBe('high');
+      expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+      expect(await tagRows(x)).toEqual([]);
+    }
+  });
+
+  it('parentTag: a tag on a type without effort is unchanged, and a malformed tag still refuses the spawn', async () => {
+    const x = engine(new Map(), { files: agentFile('plain', 'description: none') });
+    await x.spawned('[effort: low]\nGo.', 'a1', { subagentType: 'plain' });
+    expect(await x.step('a1', 'high')).toBe('low');
+    expect(await tagRows(x)).toEqual([]);
+    for (const files of [own, steered]) {
+      const y = engine(new Map(), { files });
+      expect(await y.spawn('[effort: turbo] go', { subagentType: files === own ? 'builder' : 'lead' }).result).toHaveProperty('deny');
+    }
+  });
+
+  it('parentTag: an unknown value is reported and honor applies', async () => {
+    const x = engine(new Map(), { files: { ...own, ...agentFile('odd', 'effort: high\neffortControl:\n  enabled: off\n  parentTag: sometimes') }, options: { parentTag: 'maybe' } });
+    await x.sessionStart();
+    await x.spawned('[effort: low]\nGo.', 'a1', { subagentType: 'builder' });
+    await x.spawned('[effort: low]\nGo.', 'a2', { subagentType: 'odd' });
+    expect(x.logs).toContain('effort-live-control: option "parentTag" is "maybe", not honor or ignore; using the default "honor"');
+    expect(x.logs).toContain('effort-live-control: /proj/.claude/agents/odd.md effortControl.parentTag for odd is invalid (not honor or ignore); using honor');
+    expect(await x.step('a1', 'high')).toBe('low');
+    expect(await x.step('a2', 'high')).toBe('low');
+  });
+
+  it('parentTag: end to end, a tagged steered spawn with effort high and tag medium sends medium, and a tripwire raises it to high', async () => {
+    const x = engine(new Map(), { files: steered });
+    await x.spawned('[effort: medium]\nBuild X.', 'L1', { subagentType: 'lead' });
+    expect(await x.step('L1', 'xhigh', undefined, OPUS)).toBe('medium');
+    await x.tool('L1', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    expect(await x.step('L1', 'xhigh', undefined, OPUS)).toBe('high');
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'mechanical', agent: 'L1', tripwire: 'fail1', from: 'medium', to: 'high' }));
+  });
+});
+
 suite('describe line', () => {
-  it('tells the model a definition effort keeps and the tag is ignored', async () => {
+  it('tells the model the tag wins over a definition effort, and under parentTag ignore that the definition keeps it', async () => {
     const x = engine();
     const { description } = await x.describeTool('Agent', 'Launch a new agent.');
-    expect(description).toContain('Effort: start the prompt with [effort: low|medium|high|xhigh|max] to run the sub-agent at that effort; without it, the sub-agent keeps the effort it starts with. An agent whose definition sets its own effort keeps it, and the tag is ignored.');
+    expect(description).toContain('Effort: start the prompt with [effort: low|medium|high|xhigh|max] to run the sub-agent at that effort; without it, the sub-agent keeps the effort it starts with. The tag also wins over an effort the agent definition sets.');
+    const ignoring = engine(new Map(), { options: { parentTag: 'ignore' } });
+    expect((await ignoring.describeTool('Agent', 'Launch a new agent.')).description).toContain('An agent whose definition sets its own effort keeps it, and the tag is ignored.');
   });
 });
 

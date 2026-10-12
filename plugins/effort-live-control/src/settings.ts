@@ -1,13 +1,15 @@
 // Every knob is a plugin option. Defaults agree in three places: here, plugin.json's userConfig and the README table.
 // A bad value is reported by key and value, and the default applies.
 
-import { isEffort, LEVELS, type Effort } from './effort.ts';
+import { isEffort, isParentTag, LEVELS, type Effort, type ParentTag } from './effort.ts';
 import { parseTripwires } from './judge.ts';
 import { rank } from './ladder.ts';
 
 export type Settings = {
   floor: Effort;
   ceiling: Effort;
+  /** `honor`: a tag wins over an effort the agent's definition sets; `ignore`: the definition keeps it. */
+  parentTag: ParentTag;
   models: string[];
   judge: boolean;
   judgeRaiseAt: number;
@@ -30,6 +32,7 @@ export type Settings = {
 export const DEFAULTS: Settings = {
   floor: 'medium',
   ceiling: 'xhigh',
+  parentTag: 'honor',
   models: ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5'],
   judge: false,
   judgeRaiseAt: 25,
@@ -99,6 +102,8 @@ const parsePercent = (raw: unknown): Parsed<number> => {
   return Number.isInteger(n) && n >= 0 && n <= 100 ? good(n) : bad('not a whole number from 0 to 100');
 };
 
+const parseParentTag = (raw: unknown): Parsed<ParentTag> => (isParentTag(raw) ? good(raw) : bad('not honor or ignore'));
+
 const parseText = (raw: unknown): Parsed<string> => (typeof raw === 'string' ? good(raw) : bad('not text'));
 
 function parseTripwireList(raw: unknown): Parsed<string> {
@@ -142,6 +147,7 @@ const dirItem = (item: string): string | undefined => (item.trim() !== '' ? unde
 const PARSERS: { [K in keyof Settings]: (raw: unknown) => Parsed<Settings[K] | 'default'> } = {
   floor: parseLevel,
   ceiling: parseLevel,
+  parentTag: parseParentTag,
   models: listOf(modelItem),
   judge: parseBool,
   judgeRaiseAt: parsePercent,

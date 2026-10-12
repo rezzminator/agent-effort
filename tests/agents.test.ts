@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Definitions, type AgentFs, type ControlDefaults } from '../plugins/effort-live-control/src/agents.ts';
 
 const ALL = ['fail1', 'fail2', 'red', 'redispatch'] as const;
-const DEFAULTS: ControlDefaults = { floor: 'medium', ceiling: 'xhigh', judge: true, tripwires: ALL };
+const DEFAULTS: ControlDefaults = { floor: 'medium', ceiling: 'xhigh', judge: true, tripwires: ALL, parentTag: 'honor' };
 
 // A stand-in file system: a map of path → text; a path listed in `broken` fails to read.
 function standIn(files: Record<string, string>, broken: string[] = []) {
@@ -27,7 +27,7 @@ describe('Definitions.resolve', () => {
   it('finds <dir>/<type>.md and reads its effort, case-insensitively', async () => {
     const x = standIn({ '/p/.claude/agents/builder.md': '---\nname: builder\neffort: XHigh\n---\nBody' });
     const found = await x.defs(['/p/.claude/agents']).resolve('builder');
-    expect(found).toMatchObject({ path: '/p/.claude/agents/builder.md', effort: 'xhigh', control: undefined, errors: [] });
+    expect(found).toMatchObject({ path: '/p/.claude/agents/builder.md', effort: 'xhigh', control: undefined, parentTag: 'honor', errors: [] });
   });
 
   it('takes the first directory that holds the type, in order', async () => {
@@ -47,7 +47,7 @@ describe('Definitions.resolve', () => {
 
   it('reports no definition for an unknown type, with no errors', async () => {
     const x = standIn({});
-    expect(await x.defs(['/a']).resolve('general-purpose')).toEqual({ path: undefined, effort: undefined, control: undefined, errors: [] });
+    expect(await x.defs(['/a']).resolve('general-purpose')).toEqual({ path: undefined, effort: undefined, control: undefined, parentTag: 'honor', errors: [] });
   });
 
   it('reads a numeric or unknown effort as no effort level', async () => {
@@ -146,8 +146,42 @@ describe('effortControl', () => {
   it('R-3: the option defaults come from the settings, not constants', async () => {
     const files = { '/a/t.md': '---\nname: t\neffortControl: on\n---\n' };
     const x = standIn(files);
-    const defs = new Definitions(['/a'], { floor: 'low', ceiling: 'high', judge: false, tripwires: ['red'] }, { exists: async () => true, read: async () => files['/a/t.md'], listMarkdown: async () => [] }, () => {});
+    const defs = new Definitions(['/a'], { floor: 'low', ceiling: 'high', judge: false, tripwires: ['red'], parentTag: 'honor' }, { exists: async () => true, read: async () => files['/a/t.md'], listMarkdown: async () => [] }, () => {});
     expect((await defs.resolve('t')).control).toEqual({ floor: 'low', ceiling: 'high', landing: [], judge: false, tripwires: ['red'] });
     expect(x.logs).toEqual([]);
+  });
+});
+
+describe('effortControl.parentTag', () => {
+  const read = async (frontmatter: string, defaults: ControlDefaults = DEFAULTS) => {
+    const x = standIn({ '/a/t.md': `---\nname: t\n${frontmatter}\n---\n` });
+    const defs = new Definitions(['/a'], defaults, { exists: async () => true, read: async () => `---\nname: t\n${frontmatter}\n---\n`, listMarkdown: async () => [] }, (line) => x.logs.push(line));
+    return { found: await defs.resolve('t'), logs: x.logs };
+  };
+
+  it('parentTag: a definition takes the option when its frontmatter names none', async () => {
+    expect((await read('effort: high')).found.parentTag).toBe('honor');
+    expect((await read('effort: high', { ...DEFAULTS, parentTag: 'ignore' })).found.parentTag).toBe('ignore');
+    expect((await standIn({}).defs(['/a']).resolve('absent')).parentTag).toBe('honor');
+  });
+
+  it('parentTag: the frontmatter key overrides the option, case-insensitively, with steering on or off', async () => {
+    expect((await read('effort: high\neffortControl:\n  floor: low\n  parentTag: Ignore')).found).toMatchObject({ parentTag: 'ignore', control: { floor: 'low' } });
+    expect((await read('effort: high\neffortControl:\n  parentTag: honor', { ...DEFAULTS, parentTag: 'ignore' })).found.parentTag).toBe('honor');
+    const off = (await read('effort: high\neffortControl:\n  enabled: off\n  parentTag: ignore')).found;
+    expect(off).toMatchObject({ parentTag: 'ignore', effort: 'high', control: undefined });
+  });
+
+  it('parentTag: the key alone pins a type without steering it', async () => {
+    expect((await read('effort: high\neffortControl:\n  parentTag: ignore')).found).toMatchObject({ parentTag: 'ignore', control: undefined });
+    expect((await read('effort: high\neffortControl:\n  parentTag: ignore\n  judge: on')).found.control).toMatchObject({ judge: true });
+  });
+
+  it('parentTag: an unknown value is logged with its key and the type and the option applies', async () => {
+    const { found, logs } = await read('effort: high\neffortControl:\n  enabled: off\n  parentTag: sometimes', { ...DEFAULTS, parentTag: 'ignore' });
+    expect(found.parentTag).toBe('ignore');
+    const line = 'effort-live-control: /a/t.md effortControl.parentTag for t is invalid (not honor or ignore); using ignore';
+    expect(logs).toEqual([line]);
+    expect(found.errors).toEqual([line]);
   });
 });

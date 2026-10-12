@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-0.1.3-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-287%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-312%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -19,7 +19,7 @@ Agent({
 })
 ```
 
-<sup>The sub-agent runs its model requests at `low`, whatever the session's `/effort` says. A type whose definition sets its own `effort:` keeps it and the tag is ignored. Two requests made on a sub-agent's behalf are not pinned ([How it works](#-how-it-works)).</sup>
+<sup>The sub-agent runs its model requests at `low`, whatever the session's `/effort` says. A tag also wins over a definition's own `effort:` (`parentTag: ignore` pins the definition's). Two requests made on a sub-agent's behalf are not pinned ([How it works](#-how-it-works)).</sup>
 
 ## 🤔 Why
 
@@ -55,16 +55,16 @@ claude plugin uninstall effort-live-control@effort-live-control
 | Hook | What it does |
 | --- | --- |
 | `tool.describe` | Appends the tag's usage to the Agent tool's description. |
-| `agent.spawn` | Reads the tag, the prompt's first non-blank text. An unknown level refuses the spawn, and the model sees why. A valid tag is removed from the prompt, so the sub-agent never sees it. Then reads the spawned type's definition: when it sets an `effort:` level, the tag is ignored and the pin is that level (a `tag-ignored` row says so); otherwise the tag pins. The pin is recorded against the new sub-agent's id. A definition with `effortControl` on starts steering the agent. |
-| `turn.step` | Before each of that sub-agent's model requests, sets the request's `effort` to its pin: the definition's level, the tagged level, or for an untagged sub-agent the effort of its first request. A steered agent gets its current live level instead. |
+| `agent.spawn` | Reads the tag, the prompt's first non-blank text. An unknown level refuses the spawn, and the model sees why. A valid tag is removed from the prompt, so the sub-agent never sees it. Then reads the spawned type's definition: the tag pins, even over an `effort:` level the definition sets (a `tag` row says so); under `parentTag: ignore` that level pins instead and a `tag-ignored` row says so. The pin is recorded against the new sub-agent's id. A definition with `effortControl` on starts steering the agent. |
+| `turn.step` | Before each of that sub-agent's model requests, sets the request's `effort` to its pin: the tagged level, else the definition's level, or for an untagged sub-agent the effort of its first request. A steered agent gets its current live level instead. |
 | `tool.call` | Reads a steered agent's own test runs, reads and messages; answers the `effort_up` and `effort_down` tools; carries a level change into the agent's next tool result. |
 | `turn.complete` | When a sub-agent finishes, clears its pin and drops its steering state. A finished child's last answer is read as a return by its steered parent. A run that ends while the agent still runs, or waits on its own background work (a child agent, a backgrounded shell, a monitor), keeps both. |
 | `session.start` | Registers the two button tools. |
 
 - The tag counts only as the prompt's first non-blank text, written on one line. `[effort: high]` later in the prompt is ordinary prose, and a markdown link `[effort: high](…)` is not a tag.
 - Levels are case-insensitive: `low`, `medium`, `high`, `xhigh`, `max`.
-- A definition's `effort:` beats the tag: the tag is stripped, ignored and logged. A malformed tag still refuses the spawn, whatever the definition says.
-- Every sub-agent is pinned. A tagged one runs at its tag (or its definition's effort). An untagged one runs at the effort its first request carries (its frontmatter `effort:`, else the session's), so changing `/effort` mid-run never reaches a sub-agent already working.
+- A tag beats the definition's `effort:`: measured over 147 orchestrator runs, the effort the parent tags predicts trouble (18% of runs tagged medium struggled, 53% high, 77% xhigh), so the tag is kept. A steered agent starts at the tag held within its floor and ceiling (`tag` row: `tag`, `effort`, `home`, and `clamped` when the range moved it). `parentTag: ignore`, as the option or per type as `effortControl.parentTag`, keeps the definition's `effort:` instead: the tag is stripped, ignored and logged. A malformed tag still refuses the spawn, whatever the definition says.
+- Every sub-agent is pinned. A tagged one runs at its tag (or, under `parentTag: ignore`, its definition's effort). An untagged one runs at the effort its first request carries (its frontmatter `effort:`, else the session's), so changing `/effort` mid-run never reaches a sub-agent already working.
 - A pin lasts until the sub-agent finishes. Then it is cleared, and a continuation (SendMessage) is pinned afresh at its own first request, at the effort current then.
 - The sub-agent reads its prompt without the tag. A prompt that is only a tag is refused.
 - Pins are held by Claude Code for the session and survive a plugin reload. A sub-agent resumed in a new session runs unpinned, at its own effort. Steering state lives in memory: a reload ends it, and the agent goes on at its pin.
@@ -96,11 +96,12 @@ You coordinate the build. Spawn builders, check their returns, run the tests, th
 | `effortControl.landing` | Agent types, separated by spaces or commas: spawning one lowers the agent one step below its home level. |
 | `effortControl.judge` | `on` or `off`: ask the judge at a tripwire, or raise one step mechanically (default: the option). |
 | `effortControl.tripwires` | The armed tripwires for this agent, comma-separated (`fail1`, `fail2`, `red`, `redispatch`; empty arms none), e.g. `red, redispatch` for an agent that writes its tests first (default: the option). |
-| `effortControl.enabled` | `on` or `off`; on by default when any nested key is present. |
+| `effortControl.parentTag` | `honor` or `ignore`: whether a tag beats this type's `effort:` (default: the option). Read even when steering is off, and it alone never turns steering on, so `effortControl:` holding only `parentTag: ignore` pins a type at its own `effort:` without steering it. |
+| `effortControl.enabled` | `on` or `off`; on by default when any nested key other than `parentTag` is present. |
 
 An invalid value is logged (`effort-live-control: {path} effortControl.{key} for {type} is invalid (…); using …`) and the default used. An agent whose definition has no `effortControl`, or has it off, is not steered; only the tag rules above apply to it.
 
-A steered agent starts at its **home** level: its definition's `effort:`, else its tag, else the effort of its first request (a numeric effort leaves the agent unsteered). Every request is sent at its current level, held within floor..ceiling, on a model listed in `models`; any other model passes through untouched.
+A steered agent starts at its **home** level: its tag, else its definition's `effort:`, else the effort of its first request (a numeric effort leaves the agent unsteered); the home is held within floor..ceiling, so `[effort: low]` on a floor-`medium` agent starts at `medium`. Under `parentTag: ignore` the definition's `effort:` comes first. Every request is sent at its current level, held within floor..ceiling, on a model listed in `models`; any other model passes through untouched.
 
 | Moment | What happens |
 | --- | --- |
@@ -129,6 +130,7 @@ Set under the plugin's settings. A bad value is reported once at the first hook 
 | --- | --- | --- |
 | `floor` | `medium` | Lowest effort a steered agent is sent. `effortControl.floor` overrides it. |
 | `ceiling` | `xhigh` | Highest effort a steered agent is sent. `effortControl.ceiling` overrides it. |
+| `parentTag` | `honor` | `honor`: a tag on the Agent prompt wins over the `effort:` of the agent's definition, and a steered agent starts at the tag held within its floor and ceiling. `ignore`: the definition's `effort:` keeps and the tag is ignored. `effortControl.parentTag` overrides it. |
 | `models` | `claude-opus-5-5`<br>`claude-fable-5-1`<br>`claude-sonnet-5-5` | Model id prefixes that are steered; `claude-opus-5-5` also matches `claude-opus-5-5[1m]`. Any other model passes untouched. |
 | `judge` | `false` | Ask the judge at a tripwire; off raises one step mechanically. `effortControl.judge` overrides it. |
 | `judgeRaiseAt` | `25` | With the judge on: a probability (0 to 100) at or above this raises the effort one step; below it the effort holds. |
@@ -148,7 +150,7 @@ Set under the plugin's settings. A bad value is reported once at the first hook 
 
 ## 📜 Decision log
 
-`logFile` holds one JSONL file per session, the newest 5,000 rows. Every row has `ts`, `event`, `agent` (an id, or `main`) and `type`. Rows: `step` for every steered request (`model`, `requested`, `sent`, `struggle`), `tag-ignored`, `judge` (`tripwire`, `p`, `from`, `to`, `reason`, `ms`, `usage`), `judge-failed`, `judge-stale`, `judge-busy`, `mechanical` (`tripwire`, `from`, `to`; `busy` when it replaced a stale judge call), `resolved`, `landing`, `button`, `button-refused`, `model-gated`, `not-steered`, `end`, and option, tool-registration and resolution errors. No prompt, brief or tool-result text is written, except the judge's `packet` and `answer` when `logPackets` is on.
+`logFile` holds one JSONL file per session, the newest 5,000 rows. Every row has `ts`, `event`, `agent` (an id, or `main`) and `type`. Rows: `step` for every steered request (`model`, `requested`, `sent`, `struggle`), `tag` (`tag`, `effort`; `home` and `clamped` for a steered agent), `tag-ignored`, `judge` (`tripwire`, `p`, `from`, `to`, `reason`, `ms`, `usage`), `judge-failed`, `judge-stale`, `judge-busy`, `mechanical` (`tripwire`, `from`, `to`; `busy` when it replaced a stale judge call), `resolved`, `landing`, `button`, `button-refused`, `model-gated`, `not-steered`, `end`, and option, tool-registration and resolution errors. No prompt, brief or tool-result text is written, except the judge's `packet` and `answer` when `logPackets` is on.
 
 ## ❓ FAQ
 

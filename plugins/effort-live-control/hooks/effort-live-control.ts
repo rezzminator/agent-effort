@@ -7,6 +7,7 @@ import { isLevel } from '../src/ladder.ts';
 import { appendRows, sessionLogPath } from '../src/log.ts';
 import { compile, resolveSettings, type Compiled, type Settings } from '../src/settings.ts';
 import { isTestRun, testOutcome } from '../src/signals.ts';
+import { startOf } from '../src/start.ts';
 import { BUTTON_DOWN, BUTTON_UP, REFUSED, type Direction } from '../src/text.ts';
 
 // Thin adapter: every decision lives in src/. A failure is logged with its context and
@@ -175,7 +176,7 @@ function start(rt: Runtime, $: EngineInterface): Promise<void> {
     const dirs = [`${cwd}/.claude/agents`, ...(configDir ? [`${configDir}/agents`] : []), ...(home ? [`${home}/.claude/agents`] : []), ...rt.config.agentDirs];
     rt.defs = new Definitions(
       dirs,
-      { floor: rt.config.floor, ceiling: rt.config.ceiling, judge: rt.config.judge, tripwires: tripwiresOf(rt.config.tripwires) },
+      { floor: rt.config.floor, ceiling: rt.config.ceiling, judge: rt.config.judge, tripwires: tripwiresOf(rt.config.tripwires), parentTag: rt.config.parentTag },
       {
         exists: (path) => $.fs.exists(path),
         read: (path) => $.fs.read(path),
@@ -187,15 +188,15 @@ function start(rt: Runtime, $: EngineInterface): Promise<void> {
   return rt.started;
 }
 
-const NO_DEFINITION: Definition = { path: undefined, effort: undefined, control: undefined, errors: [] };
+const NO_DEFINITION = (rt: Runtime): Definition => ({ path: undefined, effort: undefined, control: undefined, parentTag: rt.config.parentTag, errors: [] });
 
 async function definitionOf(rt: Runtime, $: EngineInterface, type: string | undefined): Promise<Definition> {
-  if (!type || !rt.defs) return NO_DEFINITION;
+  if (!type || !rt.defs) return NO_DEFINITION(rt);
   try {
     return await rt.defs.resolve(type);
   } catch (error) {
     $.ui.log(`effort-live-control: reading the definition of ${type} failed: ${message(error)}; treating it as having none`);
-    return NO_DEFINITION;
+    return NO_DEFINITION(rt);
   }
 }
 
@@ -254,20 +255,24 @@ function runJudge(rt: Runtime, $: EngineInterface, controller: Controller, actio
     .catch((error: unknown) => $.ui.log(`effort-live-control: reading the judge's answer for ${controller.id} failed: ${message(error)}; its effort stays where it is`));
 }
 
-// A spawn returned an id: log an ignored tag, tell a steered parent, and start steering the child.
+// What a spawn starts at: the tag against the definition's own effort, by `parentTag`.
+// A steered agent's home waits for its first request when neither names a level.
+function startOfSpawn(definition: Definition, tagged: Effort | undefined) {
+  return startOf({ tagged, own: definition.effort, parentTag: definition.parentTag, range: definition.control });
+}
+
+// A spawn returned an id: log what the tag did, tell a steered parent, and start steering the child.
 function afterSpawn(rt: Runtime, $: EngineInterface, agentId: string, type: string, parentId: string | undefined, name: string | undefined, definition: Definition, tagged: Effort | undefined, brief: string): void {
   try {
-    if (tagged !== undefined && definition.effort !== undefined) {
-      record(rt, $, agentId, type, { event: 'tag-ignored', tag: tagged, effort: definition.effort });
-    }
+    const start = startOfSpawn(definition, tagged);
+    if (start.row) record(rt, $, agentId, type, start.row);
     const parent = parentId === undefined ? undefined : rt.steered.get(parentId);
     if (parent) {
       rt.childOf.set(agentId, parent.id);
       perform(rt, $, parent, parent.onSpawn({ childId: agentId, type, name }).actions);
     }
     if (definition.control) {
-      const home = definition.effort ?? tagged;
-      if (home !== undefined) newController(rt, agentId, type, definition.control, home, brief);
+      if (start.level !== undefined) newController(rt, agentId, type, definition.control, start.level, brief);
       else rt.awaiting.set(agentId, { type, control: definition.control, brief });
     }
   } catch (error) {
@@ -377,7 +382,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('tool.describe', async ($, e, next) => {
     const result = await next(e);
     if (!AGENT_TOOLS.has(e.tool)) return result;
-    return { ...result, description: describe(result.description) };
+    return { ...result, description: describe(result.description, rt.config.parentTag) };
   });
 
   on('agent.spawn', async ($, e, next) => {
@@ -394,7 +399,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       if (result.agentId !== undefined) {
         afterSpawn(rt, $, result.agentId, e.subagentType ?? 'unknown', e.parentAgentId, e.name, definition, tagged, prompt);
         try {
-          await writePin($, result.agentId, { level: definition.effort ?? tagged ?? null });
+          await writePin($, result.agentId, { level: startOfSpawn(definition, tagged).level ?? null });
         } catch (error) {
           $.ui.log(`effort-live-control: recording sub-agent ${result.agentId}'s pin failed: ${message(error)}; it runs at the session's effort, unpinned`);
         }

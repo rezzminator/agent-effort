@@ -37,6 +37,12 @@
       "description": "The highest reasoning effort a live-controlled agent is sent: low, medium, high, xhigh or max. A raise stops here. An agent's effortControl.ceiling overrides it. Must not be below floor.",
       "default": "xhigh"
     },
+    "parentTag": {
+      "type": "string",
+      "title": "parentTag: honor or ignore the parent's effort tag on an agent that sets its own effort",
+      "description": "honor (default): an [effort: ...] tag on the Agent prompt wins over the effort: in the agent's definition; a steered agent starts at the tag held within its floor and ceiling. ignore: the definition's effort keeps and the tag is ignored. An agent's effortControl.parentTag overrides it.",
+      "default": "honor"
+    },
     "models": {
       "type": "string",
       "title": "models: which models are steered (id prefixes)",

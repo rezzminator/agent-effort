@@ -25,10 +25,11 @@ describe('resolveSettings', () => {
       logFile: '~/.local/state/effort-live-control/decisions.jsonl',
       logPackets: false,
       tripwires: 'fail1,fail2,red,redispatch',
+      parentTag: 'honor',
     });
     expect(DEFAULTS.testCommandPatterns).toHaveLength(17);
     expect(DEFAULTS.failurePatterns).toHaveLength(6);
-    expect(SETTING_KEYS).toHaveLength(18);
+    expect(SETTING_KEYS).toHaveLength(19);
   });
 
   it('reads valid values of every kind', () => {
@@ -114,6 +115,22 @@ describe('tripwires option', () => {
     expect(settings.tripwires).toBe('fail1,fail2,red,redispatch');
     expect(errors).toEqual(['effort-live-control: option "tripwires" is "fail1,boom", "boom" is not a tripwire (fail1, fail2, red, redispatch); using the default "fail1,fail2,red,redispatch"']);
     expect(resolveSettings({ tripwires: 7 }).errors).toHaveLength(1);
+  });
+});
+
+describe('parentTag option', () => {
+  it('parentTag: honor is the default, and honor and ignore are read', () => {
+    expect(DEFAULTS.parentTag).toBe('honor');
+    expect(resolveSettings({ parentTag: 'ignore' })).toEqual({ settings: { ...DEFAULTS, parentTag: 'ignore' }, errors: [] });
+    expect(resolveSettings({ parentTag: 'honor' })).toEqual({ settings: DEFAULTS, errors: [] });
+  });
+
+  it('parentTag: an unknown value is reported by key and value and honor applies', () => {
+    for (const raw of ['sometimes', 'Honor', '', true, 7]) {
+      const { settings, errors } = resolveSettings({ parentTag: raw });
+      expect(settings.parentTag, String(raw)).toBe('honor');
+      expect(errors, String(raw)).toEqual([`effort-live-control: option "parentTag" is ${JSON.stringify(raw)}, not honor or ignore; using the default "honor"`]);
+    }
   });
 });
 
