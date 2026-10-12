@@ -8,6 +8,14 @@ export type Effort = (typeof LEVELS)[number];
 /** An effort as a request carries it: a level, or a number on models that take one. */
 export type Level = Effort | number;
 
+/** Whether a tag wins over an effort the agent's definition sets (`honor`) or yields to it (`ignore`). */
+export const PARENT_TAGS = ['honor', 'ignore'] as const;
+export type ParentTag = (typeof PARENT_TAGS)[number];
+
+export function isParentTag(value: unknown): value is ParentTag {
+  return typeof value === 'string' && (PARENT_TAGS as readonly string[]).includes(value);
+}
+
 export type Tag =
   | { kind: 'none' }
   | { kind: 'ok'; effort: Effort }
@@ -44,11 +52,18 @@ export function denyText(raw: string): string {
   return `The prompt's effort tag names "${raw}", which is not an effort level. Start the prompt with [effort: ${LEVELS.join('|')}], or leave the tag out to keep the agent's own effort.`;
 }
 
-export const DESCRIBE_LINE = `\n\nEffort: start the prompt with [effort: ${LEVELS.join('|')}] to run the sub-agent at that effort; without it, the sub-agent keeps the effort it starts with.`;
+const DESCRIBE_HEAD = `\n\nEffort: start the prompt with [effort: ${LEVELS.join('|')}] to run the sub-agent at that effort; without it, the sub-agent keeps the effort it starts with.`;
+
+/** The Agent tool's usage line when a tag wins over an effort the agent definition sets (the default). */
+export const DESCRIBE_LINE = `${DESCRIBE_HEAD} The tag also wins over an effort the agent definition sets.`;
+
+/** The same line under `parentTag: ignore`. */
+export const DESCRIBE_LINE_IGNORE = `${DESCRIBE_HEAD} An agent whose definition sets its own effort keeps it, and the tag is ignored.`;
 
 /** Appends the tag's usage to a description once, whatever calls it twice. */
-export function describe(description: string): string {
-  return description.includes(DESCRIBE_LINE.trim()) ? description : description + DESCRIBE_LINE;
+export function describe(description: string, parentTag: ParentTag = 'honor'): string {
+  const line = parentTag === 'honor' ? DESCRIBE_LINE : DESCRIBE_LINE_IGNORE;
+  return description.includes(line.trim()) ? description : description + line;
 }
 
 /**

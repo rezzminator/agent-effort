@@ -1,0 +1,295 @@
+{
+  "name": "effort-live-control",
+  "version": "0.2.0",
+  "description": "Set each Claude Code sub-agent's reasoning effort per spawn with [effort: low|medium|high|xhigh|max], and let an opted-in agent's effort rise at each failing test run or red sub-task and come home once the trouble resolves.",
+  "license": "MIT",
+  "author": {
+    "name": "Reza · Professor",
+    "url": "https://github.com/rezzminator/professor"
+  },
+  "repository": "https://github.com/rezzminator/effort-live-control",
+  "homepage": "https://github.com/rezzminator/effort-live-control",
+  "types": "./contract.d.ts",
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "sub-agent",
+    "subagent",
+    "effort",
+    "reasoning-effort",
+    "thinking",
+    "function-hooks",
+    "claude-mods",
+    "multi-agent",
+    "token-cost",
+    "professor"
+  ],
+  "userConfig": {
+    "floor": {
+      "type": "string",
+      "title": "floor: the lowest effort a steered agent is ever sent",
+      "description": "The lowest reasoning effort a live-controlled agent is sent: low, medium, high, xhigh or max. A lower home level is raised to this one. An agent's effortControl.floor overrides it. Must not be above ceiling.",
+      "default": "medium"
+    },
+    "ceiling": {
+      "type": "string",
+      "title": "ceiling: the highest effort a steered agent is ever sent",
+      "description": "The highest reasoning effort a live-controlled agent is sent: low, medium, high, xhigh or max. A raise stops here. An agent's effortControl.ceiling overrides it. Must not be below floor.",
+      "default": "xhigh"
+    },
+    "parentTag": {
+      "type": "string",
+      "title": "parentTag: honor or ignore the parent's effort tag on an agent that sets its own effort",
+      "description": "honor (default): an [effort: ...] tag on the Agent prompt wins over the effort: in the agent's definition; a steered agent starts at the tag held within its floor and ceiling. ignore: the definition's effort keeps and the tag is ignored. An agent's effortControl.parentTag overrides it.",
+      "default": "honor"
+    },
+    "models": {
+      "type": "string",
+      "title": "models: which models are steered (id prefixes)",
+      "description": "One model id per entry, matched as a prefix of the request model, so claude-opus-5-5 also matches claude-opus-5-5[1m]. A live-controlled agent on a model not listed is sent its requests untouched.",
+      "default": [
+        "claude-opus-5-5",
+        "claude-fable-5-1",
+        "claude-sonnet-5-5"
+      ],
+      "multiple": true
+    },
+    "judge": {
+      "type": "boolean",
+      "title": "judge: ask the judge at a tripwire",
+      "description": "Off (default): every tripwire (a failing test run, a sub-task that returned red, a red result sent back) raises the effort one step. On: a tripwire makes one cheap model call that estimates the probability that the trouble continues; the effort rises one step only when it is at least judgeRaiseAt. An agent's effortControl.judge overrides it.",
+      "default": false
+    },
+    "judgeRaiseAt": {
+      "type": "number",
+      "title": "judgeRaiseAt: the probability that raises the effort",
+      "description": "With the judge on: a probability (0 to 100) at or above this raises the effort one step; below it the effort holds. The judge never lowers it.",
+      "default": 25,
+      "min": 0,
+      "max": 100
+    },
+    "tripwires": {
+      "type": "string",
+      "title": "tripwires: which events raise the effort",
+      "description": "The armed tripwires, comma-separated: fail1 (the first failing test run), fail2 (the 2nd failing run in a row, then every even count), red (a sub-task returned red), redispatch (a red result sent back). A disarmed tripwire is counted but raises nothing; empty arms none. An agent's effortControl.tripwires overrides it.",
+      "default": "fail1,fail2,red,redispatch"
+    },
+    "struggleDecay": {
+      "type": "number",
+      "title": "struggleDecay: requests without a new tripwire before a raised effort comes home",
+      "description": "A steered agent's open struggle ends once it has made this many requests without a new tripwire: its effort returns to the level it had before, and the red sub-agent returns still open and the failing-test streak are cleared. A later tripwire opens a new struggle. 0 turns it off. An agent's effortControl.struggleDecay overrides it.",
+      "default": 20,
+      "min": 0
+    },
+    "judgeModel": {
+      "type": "string",
+      "title": "judgeModel: the model that judges",
+      "description": "The model alias or id of the judge call (it costs one call per tripwire).",
+      "default": "haiku"
+    },
+    "judgeEffort": {
+      "type": "string",
+      "title": "judgeEffort: the judge call's own effort",
+      "description": "The reasoning effort of the judge call: low, medium, high, xhigh or max.",
+      "default": "xhigh"
+    },
+    "judgeTimeoutMs": {
+      "type": "number",
+      "title": "judgeTimeoutMs: milliseconds the judge call may take",
+      "description": "A judge call that has not answered after this many milliseconds is dropped and the effort rises one step instead.",
+      "default": 45000,
+      "min": 1
+    },
+    "mainChat": {
+      "type": "string",
+      "title": "mainChat: how the main chat is steered",
+      "description": "off: the main chat is untouched and the effort buttons refuse it. tripwires: it is steered like a steered agent, its home being the level each request asks for (your /effort): a failing test run of its own or a red sub-agent return raises it, and it returns once the trouble resolves. reader: as tripwires, and the prompt reader sets the turn's home at each new prompt. Only models listed in models are steered. Do not enable another plugin that steers the main chat at the same time.",
+      "default": "reader"
+    },
+    "casebookFile": {
+      "type": "string",
+      "title": "casebookFile: the prompt reader's casebook (JSONL)",
+      "description": "One past turn per line: {\"message\": text, \"previous\": text, \"level\": \"medium\"|\"high\"|\"xhigh\", \"note\": text, \"core\": true|false}. Core rows (at most 40) are always shown to the reader; the six other rows whose message is nearest to the new prompt (TF-IDF cosine) are shown as precedents. A leading ~ is your home directory. A missing or unreadable file makes the reader use a small invented casebook shipped with the plugin (an unreadable one is also reported in the log); an existing empty file, or an empty value, runs the reader without a casebook. A malformed line is skipped and named.",
+      "default": "~/.local/state/effort-live-control/casebook.jsonl"
+    },
+    "promptModel": {
+      "type": "string",
+      "title": "promptModel: the model that reads each prompt",
+      "description": "The model alias or id of the prompt reader call (one call per new prompt, with mainChat reader).",
+      "default": "haiku"
+    },
+    "promptEffort": {
+      "type": "string",
+      "title": "promptEffort: the prompt reader call's own effort",
+      "description": "The reasoning effort of the prompt reader call: low, medium, high, xhigh or max.",
+      "default": "xhigh"
+    },
+    "promptTimeoutMs": {
+      "type": "number",
+      "title": "promptTimeoutMs: milliseconds the prompt reader call may take",
+      "description": "A reader call that has not answered after this many milliseconds is dropped and the turn goes at the level its first request asks for. The first request waits for the reader, so keep it short.",
+      "default": 10000,
+      "min": 1
+    },
+    "buttons": {
+      "type": "boolean",
+      "title": "buttons: give agents effort_up and effort_down tools",
+      "description": "On: every agent can call effort_up and effort_down; a live-controlled agent moves its own effort one step, any other is refused. Off: the tools are not registered.",
+      "default": true
+    },
+    "announce": {
+      "type": "boolean",
+      "title": "announce: tell the agent when its effort changes",
+      "description": "On: the agent's next tool result carries one line naming its new effort and why. Off: it is not told.",
+      "default": true
+    },
+    "testCommandPatterns": {
+      "type": "string",
+      "title": "testCommandPatterns: which commands are test runs (regular expressions)",
+      "description": "One regular expression per entry, matched case-sensitively against each command a foreground Bash call runs (never a heredoc body or a read-only program's arguments, see readOnlyCommands). A match makes the call a test run, counted as failing or passing; a background run counts neither way.",
+      "default": [
+        "\\bgo\\s+(-C\\s+\\S+\\s+)?test\\b",
+        "\\b(npm|pnpm|yarn|bun)\\s+(run\\s+)?test\\b",
+        "\\bvitest\\b",
+        "\\bjest\\b",
+        "\\bpytest\\b",
+        "\\bpython(\\d(\\.\\d+)?)?\\s+-m\\s+unittest\\b",
+        "\\bnode\\s+(--test|--test-only)\\b",
+        "\\bcargo\\s+(test|nextest)\\b",
+        "\\bmake\\b[^;&|\\n]*?\\b(test|check|verify)\\b",
+        "\\bjust\\b[^;&|\\n]*?\\b(test|check)\\b",
+        "\\b(mvn|gradle|gradlew)\\b[^;&|\\n]*?\\btest\\b",
+        "\\bdotnet\\s+test\\b",
+        "\\bdeno\\s+test\\b",
+        "\\bswift\\s+test\\b",
+        "\\bmix\\s+test\\b",
+        "\\b(rspec|phpunit|ctest|tox|nox)\\b",
+        "\\bscripts?/test[\\w.-]*\\.sh\\b"
+      ],
+      "multiple": true
+    },
+    "readOnlyCommands": {
+      "type": "string",
+      "title": "readOnlyCommands: programs that only read or print, so never run a test (names)",
+      "description": "One program name per entry. A command whose program is listed is skipped when a Bash call is checked for a test run, so grep, cat, echo or git naming a test command is not one. The Bash call is split at ; & | and newlines, heredoc bodies are dropped, and env, time, nice, nohup, sudo, command, exec and timeout are looked through. source and . are not listed because they execute. A foreground Bash call whose every command is listed is also a file read, the only shell call a return line is read from.",
+      "default": [
+        "cat",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "ag",
+        "ack",
+        "echo",
+        "printf",
+        "sed",
+        "awk",
+        "head",
+        "tail",
+        "less",
+        "more",
+        "ls",
+        "find",
+        "fd",
+        "git",
+        "wc",
+        "which",
+        "type",
+        "man",
+        "file",
+        "stat",
+        "diff",
+        "jq",
+        "yq",
+        "sort",
+        "uniq",
+        "cut",
+        "tr",
+        "tee",
+        "test",
+        "[",
+        "[[",
+        "cd",
+        "pushd",
+        "popd",
+        "mkdir",
+        "rm",
+        "cp",
+        "mv",
+        "touch",
+        "chmod",
+        "ln",
+        "basename",
+        "dirname",
+        "realpath",
+        "readlink",
+        "date",
+        "sleep",
+        "true",
+        "false",
+        "export",
+        "read",
+        "wait",
+        "kill"
+      ],
+      "multiple": true
+    },
+    "failurePatterns": {
+      "type": "string",
+      "title": "failurePatterns: what counts as a failing test run (regular expressions)",
+      "description": "One regular expression per entry, matched case-sensitively against a test run's result. A run whose result is an error or matches any entry fails; any other passes.",
+      "default": [
+        "--- FAIL",
+        "FAIL(ED)?",
+        "(?<!\\d)[1-9]\\d* (failed|failing)",
+        "AssertionError",
+        "panic:",
+        "Traceback"
+      ],
+      "multiple": true
+    },
+    "redWords": {
+      "type": "string",
+      "title": "redWords: words that open a red return line",
+      "description": "A sub-agent answer or a read result whose line is WORD, WORD name or WORD name: detail with one of these words is a failed return. Case-sensitive.",
+      "default": [
+        "FAIL",
+        "FAILED",
+        "BLOCKED",
+        "PARTIAL",
+        "SPEC-DRIFT"
+      ],
+      "multiple": true
+    },
+    "greenWords": {
+      "type": "string",
+      "title": "greenWords: words that open a green return line",
+      "description": "Like redWords, for a return that clears an earlier red one from the same unit.",
+      "default": [
+        "DONE",
+        "PASS",
+        "FIXED"
+      ],
+      "multiple": true
+    },
+    "agentDirs": {
+      "type": "string",
+      "title": "agentDirs: extra directories of agent definitions",
+      "description": "One directory per entry, searched after .claude/agents of the project, of CLAUDE_CONFIG_DIR and of the home directory, for the definition of an agent type (its effort and effortControl).",
+      "default": [],
+      "multiple": true
+    },
+    "logFile": {
+      "type": "string",
+      "title": "logFile: the decision log (JSONL)",
+      "description": "Where decisions are appended, one JSON row per decision, request and event, never prompt or tool-result text. The session id is inserted before the extension, one file per session; the newest 5000 rows are kept. A leading ~ is your home directory. Empty: no log.",
+      "default": "~/.local/state/effort-live-control/decisions.jsonl"
+    },
+    "logPackets": {
+      "type": "boolean",
+      "title": "logPackets: put the judge's snapshot and answer in the log",
+      "description": "On: judge rows carry the snapshot sent to the judge and its answer, which holds the agent's opening brief and last words. Off: they do not.",
+      "default": false
+    }
+  }
+}

@@ -21,8 +21,8 @@
     }
   },
   "include": [
-    "plugins/agent-effort/src",
-    "plugins/agent-effort/contract.d.ts",
+    "plugins/effort-live-control/src",
+    "plugins/effort-live-control/contract.d.ts",
     "tests"
   ]
 }

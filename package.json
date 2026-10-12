@@ -1,6 +1,6 @@
 {
-  "name": "agent-effort",
-  "version": "0.1.3",
+  "name": "effort-live-control",
+  "version": "0.2.0",
   "private": true,
   "description": "Set each Claude Code sub-agent's reasoning effort per spawn: start the Agent prompt with [effort: low|medium|high|xhigh|max].",
   "type": "module",
@@ -11,7 +11,7 @@
   "scripts": {
     "test": "vitest run --dir tests",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.hooks.json",
-    "validate:plugin": "claude plugin validate --strict . && claude plugin validate --strict plugins/agent-effort",
+    "validate:plugin": "claude plugin validate --strict . && claude plugin validate --strict plugins/effort-live-control",
     "release:check": "scripts/release-check.sh"
   },
   "devDependencies": {
