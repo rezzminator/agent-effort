@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-0.1.3-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-457%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-462%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -132,8 +132,8 @@ A steered agent starts at its **home** level: its tag, else its definition's `ef
 - **Mid-turn**: the main chat has the tripwires of a steered agent. Its own failing Bash test run (`fail1`, `fail2`) and a sub-agent's red return (`red`, `redispatch`) raise it one step, and it returns to the turn's home once the trouble resolves. An open failure streak continues into the next turn, where a new prompt only changes the home. The landing rule does not apply, and `effort_up` and `effort_down` work for the main chat.
 - **On failure**: a timeout, an error or an answer with no three numbers sends the turn at the level its first request asks for (your `/effort`), and the log row says why: `reader-timeout`, `reader-failed` (with the error) or `reader-unparsed`. A model outside `models` is untouched and costs no call.
 - **`tripwires`** makes no reader call: the main chat's home is the level each request asks for, never changed at a prompt. **`off`** leaves the main chat untouched and the buttons refuse it.
-- **The casebook** (`casebookFile`) is JSONL, one past turn per line: `{"message": "…", "previous": "…", "level": "medium", "note": "…", "core": false}` with `level` one of `medium`, `high`, `xhigh`. Rows with `core: true` (at most 40) are always shown, sorted by level; the six other rows whose `message` is nearest to the new prompt by TF-IDF cosine are shown as precedents. The plugin ships none and writes none: without the file the reader runs on the prompt and the previous reply alone, and the row says `casebook: 0`. A malformed line is skipped and named in one log line; an unreadable file is reported in the log and in the row, never as "no casebook". The file is read once and again when it changes.
-- **Why**: on 272 prompts of one user's work, each labelled with the effort it needed, picking the level from design or architecture words did worse than always-high (an average loss of 0.743 and 0.790 against 0.710), while this reader at `xhigh` scored 0.351.
+- **The casebook** (`casebookFile`) is JSONL, one past turn per line: `{"message": "…", "previous": "…", "level": "medium", "note": "…", "core": false}` with `level` one of `medium`, `high`, `xhigh`. Rows with `core: true` (at most 40) are always shown, sorted by level; the six other rows whose `message` is nearest to the new prompt by TF-IDF cosine are shown as precedents. Until that file exists, the reader uses a small invented casebook shipped with the plugin (36 made-up turns), because on 272 labelled prompts it scored a loss of 0.478 against 0.513 with none (always-high: 0.710); writing your own file in the same format replaces it, and an empty file turns the casebook off (the row says `casebook: 0`). The plugin writes no file. A malformed line is skipped and named in one log line; an unreadable file is reported in the log and in the row, never as "no casebook", and the bundled casebook is used meanwhile. The file is read once and again when it changes.
+- **Why**: on 272 prompts of one user's work, each labelled with the effort it needed, picking the level from design or architecture words did worse than always-high (an average loss of 0.743 and 0.790 against 0.710), while this reader, one Haiku call per prompt at `xhigh`, scored 0.513 with no casebook and 0.478 with the bundled one (lower is better).
 - **One steerer at a time**: do not enable auto-effort together with this, because both steer the main chat's effort.
 - **What leaves the machine**: the message and the end of the previous reply go to the reader model, and the casebook rows it shows with them. The log holds no prompt or reply text unless `logPackets` is on.
 
@@ -154,7 +154,7 @@ Set under the plugin's settings. A bad value is reported once at the first hook 
 | `judgeEffort` | `xhigh` | The judge call's own effort. |
 | `judgeTimeoutMs` | `45000` | Milliseconds before an unanswered judge call is dropped and the effort rises one step. |
 | `mainChat` | `reader` | Steering of the main chat: `off` leaves it untouched, `tripwires` steers it like a steered agent at the level each request asks for, `reader` also lets the prompt reader set the level at each new prompt ([Main chat](#-main-chat)). |
-| `casebookFile` | `~/.local/state/effort-live-control/casebook.jsonl` | The prompt reader's casebook, JSONL, one past turn per line; a leading `~` is your home directory; empty or missing: the reader runs without one. |
+| `casebookFile` | `~/.local/state/effort-live-control/casebook.jsonl` | The prompt reader's casebook, JSONL, one past turn per line; a leading `~` is your home directory. Missing or unreadable: the reader uses a small invented casebook shipped with the plugin; an existing empty file, or an empty value, runs it without one. |
 | `promptModel` | `haiku` | The prompt reader's model. |
 | `promptEffort` | `xhigh` | The prompt reader call's own effort. |
 | `promptTimeoutMs` | `10000` | Milliseconds before an unanswered reader call is dropped and the turn goes at the level its first request asks for. |
@@ -171,7 +171,7 @@ Set under the plugin's settings. A bad value is reported once at the first hook 
 
 ## 📜 Decision log
 
-`logFile` holds one JSONL file per session, the newest 5,000 rows. Every row has `ts`, `event`, `agent` (an id, or `main`) and `type`. Rows: `step` for every steered request (`model`, `requested`, `sent`, `struggle`), `tag` (`tag`, `effort`; `home` and `clamped` for a steered agent), `tag-ignored`, `judge` (`tripwire`, `p`, `from`, `to`, `reason`, `ms`, `usage`), `judge-failed`, `judge-stale`, `judge-busy`, `mechanical` (`tripwire`, `from`, `to`; `busy` when it replaced a stale judge call), `resolved`, `landing`, `button`, `button-refused`, `model-gated`, `not-steered`, `end`, and option, tool-registration and resolution errors. The main chat adds `prompt` (`p`, `level`, `home`, `ms`, `usage`, `casebook`: core rows shown, `precedents`; `casebookError` when the file could not be read) and, when the reader gave no decision, `reader-timeout`, `reader-failed` (`error`), `reader-unparsed` and `reader-gated` (a model outside `models`); its steered requests are `step` rows with `agent: main`. No prompt, brief, reply or tool-result text is written, except the judge's and the reader's `packet` and `answer` when `logPackets` is on.
+`logFile` holds one JSONL file per session, the newest 5,000 rows. Every row has `ts`, `event`, `agent` (an id, or `main`) and `type`. Rows: `step` for every steered request (`model`, `requested`, `sent`, `struggle`), `tag` (`tag`, `effort`; `home` and `clamped` for a steered agent), `tag-ignored`, `judge` (`tripwire`, `p`, `from`, `to`, `reason`, `ms`, `usage`), `judge-failed`, `judge-stale`, `judge-busy`, `mechanical` (`tripwire`, `from`, `to`; `busy` when it replaced a stale judge call), `resolved`, `landing`, `button`, `button-refused`, `model-gated`, `not-steered`, `end`, and option, tool-registration and resolution errors. The main chat adds `prompt` (`p`, `level`, `home`, `ms`, `usage`, `casebook`: core rows shown, `casebookSource`: `file` or `bundled`, `precedents`; `casebookError` when the file could not be read) and, when the reader gave no decision, `reader-timeout`, `reader-failed` (`error`), `reader-unparsed` and `reader-gated` (a model outside `models`); its steered requests are `step` rows with `agent: main`. No prompt, brief, reply or tool-result text is written, except the judge's and the reader's `packet` and `answer` when `logPackets` is on.
 
 ## ❓ FAQ
 
@@ -204,6 +204,7 @@ A live run loads the checkout with `claude --plugin-dir plugins/effort-live-cont
 | `src/control.ts` | The per-agent controller: levels, struggles, tripwires, buttons, announcements |
 | `src/judge.ts` | The judge's prompt, the snapshot and the answer parser |
 | `src/reader.ts` | The prompt reader: its prompt, the casebook and its nearest precedents, the answer parser and the decision |
+| `src/bundled-casebook.ts` | The invented casebook the reader uses until the user writes their own |
 | `src/text.ts` | The texts the model reads from the buttons and announcements |
 | `src/log.ts` | The decision log's file path and row cap |
 | `hooks/effort-live-control.ts` | The adapter: the hooks, host state and the log, and the only file that touches `$` |

@@ -2,6 +2,8 @@
 // precedents from the owner's own history, and estimates how hard the next reply must think. Pure: the prompt,
 // the casebook, the answer's parser and the decision; the hooks file makes the call and reads the file.
 
+import { BUNDLED_CASEBOOK } from './bundled-casebook.ts';
+
 export const READER_LEVELS = ['medium', 'high', 'xhigh'] as const;
 export type ReaderLevel = (typeof READER_LEVELS)[number];
 
@@ -217,6 +219,18 @@ export async function loadCasebook(path: string, io: CasebookIo): Promise<Casebo
     if (isMissing(error)) return { state: 'missing', rows: [], bad: [] };
     return { state: 'unreadable', rows: [], bad: [], error: messageOf(error) };
   }
+}
+
+/** Where the rows the reader shows come from: the user's file, or the casebook shipped with the plugin. */
+export type CasebookSource = 'file' | 'bundled';
+
+/**
+ * The rows the reader shows for `book`. A file that is there gives its own rows, even none: an empty file is the
+ * user turning the casebook off. A missing or unreadable one gives the bundled casebook (`book.error` still says why
+ * a read failed; the caller reports it).
+ */
+export function resolveCasebook(book: Casebook): { rows: readonly CaseRow[]; source: CasebookSource } {
+  return book.state === 'ok' ? { rows: book.rows, source: 'file' } : { rows: BUNDLED_CASEBOOK, source: 'bundled' };
 }
 
 /** The casebook read once and again only when the file's mtime changes; `fresh` marks a read just made. */

@@ -1,5 +1,6 @@
 import { describe as suite, expect, it } from 'vitest';
 import { register } from '../plugins/effort-live-control/hooks/effort-live-control.ts';
+import { BUNDLED_CASEBOOK } from '../plugins/effort-live-control/src/bundled-casebook.ts';
 
 // A stand-in engine: host state that outlives a re-register, a clock the test
 // fires, and the hooks the module registers, driven the way the engine drives them.
@@ -1127,6 +1128,8 @@ suite('the decision log', () => {
 
 const say = (text: string) => ({ isAnswered: true, text, usage: USAGE });
 const CASEBOOK = '/fixture-home/t/.local/state/effort-live-control/casebook.jsonl';
+// The first bundled row as the reader's prompt renders it (its message alone, "yes", also stands in the instructions).
+const SHOWN_FIRST = `   user: ${BUNDLED_CASEBOOK[0]!.message}\n`;
 const caseLine = (r: Record<string, unknown> = {}) => JSON.stringify({ message: 'plan the cache layer', previous: 'ok', level: 'xhigh', note: 'a design', core: true, ...r });
 
 /** An engine whose model calls (the prompt reader's) are answered at once by `script.next`, each call recorded. */
@@ -1147,7 +1150,7 @@ suite('main chat: the prompt reader', () => {
     expect(calls[0].prompt).toContain("Agent's previous reply (end): (none: first message)");
     expect(await x.mainStep('low')).toBe('high');
     expect(await x.mainStep('low')).toBe('high');
-    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'prompt', agent: 'main', p: [0.05, 0.9, 0.05], level: 'high', home: 'high', casebook: 0, precedents: 0 }));
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'prompt', agent: 'main', p: [0.05, 0.9, 0.05], level: 'high', home: 'high', casebook: 36, casebookSource: 'bundled', precedents: 0 }));
     expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'step', agent: 'main', requested: 'low', sent: 'high' }));
   });
 
@@ -1229,7 +1232,7 @@ suite('main chat: the prompt reader', () => {
     script.next = () => ({ isAnswered: false, reason: 'aborted', usage: USAGE });
     await x.prompt('go');
     expect(await x.mainStep('xhigh')).toBe('xhigh');
-    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'reader-timeout', agent: 'main', casebook: 0, precedents: 0 }));
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'reader-timeout', agent: 'main', casebook: 36, casebookSource: 'bundled', precedents: 0 }));
   });
 
   it('main chat: an API error and a throw send the requested level, with a reader-failed row carrying the error', async () => {
@@ -1300,23 +1303,60 @@ suite('main chat: the casebook', () => {
     expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'prompt', casebook: 1, precedents: 1 }));
   });
 
-  it('main chat: a missing casebook is the state casebook 0, with nothing logged to the user', async () => {
+  it('main chat: a missing casebook file uses the bundled casebook', async () => {
     const { x, calls } = withReader();
     await x.prompt('go');
-    expect(calls[0].prompt).not.toContain('# Casebook');
+    expect(calls[0].prompt).toContain('# Casebook');
+    expect(calls[0].prompt).toContain(SHOWN_FIRST);
     const row = (await x.rows()).find((r) => r.event === 'prompt')!;
+    expect(row.casebookSource).toBe('bundled');
+    expect(row.casebook).toBe(36);
+    expect(row.casebookError).toBeUndefined();
+    expect(x.logs).toEqual([]);
+  });
+
+  it('main chat: an empty casebook file turns the casebook off', async () => {
+    const { x, calls } = withReader({}, { files: { [CASEBOOK]: '' } });
+    await x.prompt('go');
+    expect(calls[0].prompt).not.toContain('# Casebook');
+    expect(calls[0].prompt).not.toContain(SHOWN_FIRST);
+    const row = (await x.rows()).find((r) => r.event === 'prompt')!;
+    expect(row.casebookSource).toBe('file');
     expect(row.casebook).toBe(0);
     expect(row.casebookError).toBeUndefined();
     expect(x.logs).toEqual([]);
   });
 
-  it('main chat: an unreadable casebook runs without it, and the log and the row carry the error', async () => {
-    const { x } = withReader({}, { files: { [CASEBOOK]: caseLine() }, broken: [CASEBOOK] });
+  it('main chat: an unreadable casebook file uses the bundled casebook and reports the error', async () => {
+    const { x, calls } = withReader({}, { files: { [CASEBOOK]: caseLine() }, broken: [CASEBOOK] });
     await x.prompt('go');
+    expect(calls[0].prompt).toContain(SHOWN_FIRST);
     const row = (await x.rows()).find((r) => r.event === 'prompt')!;
-    expect(row.casebook).toBe(0);
+    expect(row.casebookSource).toBe('bundled');
+    expect(row.casebook).toBe(36);
     expect(row.casebookError).toContain('EACCES');
     expect(x.logs.join('\n')).toContain(`reading the casebook ${CASEBOOK} failed: EACCES`);
+    expect(x.logs.join('\n')).toContain('the reader uses the bundled casebook');
+  });
+
+  it('main chat: a casebook path that needs an unset HOME uses the bundled casebook and reports why', async () => {
+    const { x, calls } = withReader({ logFile: '/fixture-home/t/.local/state/effort-live-control/decisions.jsonl' }, { env: { HOME: '' } });
+    await x.prompt('go');
+    expect(calls[0].prompt).toContain(SHOWN_FIRST);
+    const row = (await x.rows()).find((r) => r.event === 'prompt')!;
+    expect(row.casebookSource).toBe('bundled');
+    expect(row.casebookError).toContain('needs HOME');
+    expect(x.logs.join('\n')).toContain('casebookFile ~/.local/state/effort-live-control/casebook.jsonl needs HOME, which is unset; the prompt reader uses the bundled casebook');
+  });
+
+  it('main chat: a casebook file with rows uses only its rows', async () => {
+    const { x, calls } = withReader({}, { files: { [CASEBOOK]: caseLine() } });
+    await x.prompt('go');
+    expect(calls[0].prompt).toContain('plan the cache layer');
+    expect(calls[0].prompt).not.toContain(SHOWN_FIRST);
+    const row = (await x.rows()).find((r) => r.event === 'prompt')!;
+    expect(row.casebookSource).toBe('file');
+    expect(row.casebook).toBe(1);
   });
 
   it('main chat: a malformed line is skipped, and one log line names the file and the line numbers', async () => {

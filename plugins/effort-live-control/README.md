@@ -23,7 +23,7 @@ It requires function hooks enabled (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`) and i
 | `judgeEffort` | `xhigh` | The judge call's own effort. |
 | `judgeTimeoutMs` | `45000` | Milliseconds before an unanswered judge call is dropped and the effort rises one step. |
 | `mainChat` | `reader` | Steering of the main chat: `off` leaves it untouched, `tripwires` steers it like a steered agent at the level each request asks for, `reader` also lets the prompt reader set the level at each new prompt ([Main chat](#-main-chat)). |
-| `casebookFile` | `~/.local/state/effort-live-control/casebook.jsonl` | The prompt reader's casebook, JSONL, one past turn per line; a leading `~` is your home directory; empty or missing: the reader runs without one. |
+| `casebookFile` | `~/.local/state/effort-live-control/casebook.jsonl` | The prompt reader's casebook, JSONL, one past turn per line; a leading `~` is your home directory. Missing or unreadable: the reader uses a small invented casebook shipped with the plugin; an existing empty file, or an empty value, runs it without one. |
 | `promptModel` | `haiku` | The prompt reader's model. |
 | `promptEffort` | `xhigh` | The prompt reader call's own effort. |
 | `promptTimeoutMs` | `10000` | Milliseconds before an unanswered reader call is dropped and the turn goes at the level its first request asks for. |

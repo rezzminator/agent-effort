@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { BUNDLED_CASEBOOK } from '../plugins/effort-live-control/src/bundled-casebook.ts';
 import {
   bayes,
   buildReader,
@@ -9,6 +10,8 @@ import {
   OVER_COST,
   parseCasebook,
   parseReaderAnswer,
+  READER_LEVELS,
+  resolveCasebook,
   sharpen,
   SHARPEN_T,
   UNDER_COST,
@@ -254,5 +257,24 @@ describe('reader: the casebook file', () => {
     files['/c.jsonl'] = line() + '\n' + line({ message: 'second' });
     const changed = await cache.get('/c.jsonl', counting);
     expect([changed.fresh, changed.book.rows.length, reads]).toEqual([true, 2, 2]);
+  });
+});
+
+describe('reader: the bundled casebook', () => {
+  it('reader: the bundled casebook has 12 valid rows per level', () => {
+    const { rows, bad } = parseCasebook(BUNDLED_CASEBOOK.map((item) => JSON.stringify(item)).join('\n'));
+    expect(bad).toEqual([]);
+    expect(rows).toHaveLength(36);
+    expect(rows).toEqual([...BUNDLED_CASEBOOK]);
+    expect(READER_LEVELS.map((level) => rows.filter((item) => item.level === level).length)).toEqual([12, 12, 12]);
+    expect(rows.every((item) => item.core)).toBe(true);
+  });
+
+  it('reader: the casebook shown is the file\'s rows when it is ok, even none, and the bundled rows when it is missing or unreadable', () => {
+    const own = [row('high', 'own', { core: true })];
+    expect(resolveCasebook({ state: 'ok', rows: own, bad: [] })).toEqual({ rows: own, source: 'file' });
+    expect(resolveCasebook({ state: 'ok', rows: [], bad: [] })).toEqual({ rows: [], source: 'file' });
+    expect(resolveCasebook({ state: 'missing', rows: [], bad: [] })).toEqual({ rows: BUNDLED_CASEBOOK, source: 'bundled' });
+    expect(resolveCasebook({ state: 'unreadable', rows: [], bad: [], error: 'EACCES' })).toEqual({ rows: BUNDLED_CASEBOOK, source: 'bundled' });
   });
 });

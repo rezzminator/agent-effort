@@ -102,7 +102,7 @@
     "casebookFile": {
       "type": "string",
       "title": "casebookFile: the prompt reader's casebook (JSONL)",
-      "description": "One past turn per line: {\"message\": text, \"previous\": text, \"level\": \"medium\"|\"high\"|\"xhigh\", \"note\": text, \"core\": true|false}. Core rows (at most 40) are always shown to the reader; the six other rows whose message is nearest to the new prompt (TF-IDF cosine) are shown as precedents. A leading ~ is your home directory. A missing file or an empty value runs the reader without a casebook; an unreadable file is reported in the log. A malformed line is skipped and named.",
+      "description": "One past turn per line: {\"message\": text, \"previous\": text, \"level\": \"medium\"|\"high\"|\"xhigh\", \"note\": text, \"core\": true|false}. Core rows (at most 40) are always shown to the reader; the six other rows whose message is nearest to the new prompt (TF-IDF cosine) are shown as precedents. A leading ~ is your home directory. A missing or unreadable file makes the reader use a small invented casebook shipped with the plugin (an unreadable one is also reported in the log); an existing empty file, or an empty value, runs the reader without a casebook. A malformed line is skipped and named.",
       "default": "~/.local/state/effort-live-control/casebook.jsonl"
     },
     "promptModel": {

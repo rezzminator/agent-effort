@@ -5,7 +5,7 @@ import { describe, denyText, EMPTY_TEXT, isStillRunning, parseTag, stepEffort, s
 import { JUDGE_SYSTEM, parseTripwires, TRIPWIRES } from '../src/judge.ts';
 import { clamp, isLevel } from '../src/ladder.ts';
 import { appendRows, sessionLogPath } from '../src/log.ts';
-import { buildReader, CasebookCache, decide, NO_PREVIOUS, parseReaderAnswer, type CasebookIo } from '../src/reader.ts';
+import { buildReader, CasebookCache, decide, NO_PREVIOUS, parseReaderAnswer, resolveCasebook, type CasebookIo } from '../src/reader.ts';
 import { compile, resolveSettings, type Compiled, type Settings } from '../src/settings.ts';
 import { isTestRun, testOutcome } from '../src/signals.ts';
 import { startOf } from '../src/start.ts';
@@ -196,7 +196,7 @@ function start(rt: Runtime, $: EngineInterface): Promise<void> {
     const book = rt.config.casebookFile;
     if (book.startsWith('~') && !home) {
       rt.casebookNote = `casebookFile ${book} needs HOME, which is unset`;
-      $.ui.log(`effort-live-control: ${rt.casebookNote}; the prompt reader runs without a casebook`);
+      $.ui.log(`effort-live-control: ${rt.casebookNote}; the prompt reader uses the bundled casebook`);
     } else rt.casebookPath = book.startsWith('~') ? `${home}${book.slice(1)}` : book;
     for (const line of rt.optionErrors) {
       $.ui.log(line);
@@ -434,16 +434,21 @@ async function previousReply(rt: Runtime, $: EngineInterface): Promise<string> {
   return rt.lastReply?.trim() || NO_PREVIOUS;
 }
 
-// The casebook, read once and again when its mtime changes; a malformed line or a failed read is said once per read.
+// The casebook the reader shows, read once and again when its mtime changes; a malformed line or a failed read is said
+// once per read. A missing or unreadable file, or a path that needs an unset HOME, gives the bundled casebook; only an
+// empty `casebookFile` option (or an empty file) turns it off.
 async function readCasebook(rt: Runtime, $: EngineInterface) {
-  if (rt.casebookPath === '') return { rows: [], error: rt.casebookNote };
+  if (rt.casebookPath === '') {
+    if (rt.casebookNote === undefined) return { rows: [], source: 'file' as const, error: undefined };
+    return { ...resolveCasebook({ state: 'unreadable', rows: [], bad: [], error: rt.casebookNote }), error: rt.casebookNote };
+  }
   const { book, fresh } = await rt.casebook.get(rt.casebookPath, casebookIo($));
   if (fresh && book.bad.length > 0) {
     const shown = book.bad.slice(0, BAD_LINES_SHOWN).join(', ');
     $.ui.log(`effort-live-control: the casebook ${rt.casebookPath} has malformed lines ${shown}${book.bad.length > BAD_LINES_SHOWN ? ` and ${book.bad.length - BAD_LINES_SHOWN} more` : ''}; they are skipped`);
   }
-  if (book.state === 'unreadable') $.ui.log(`effort-live-control: reading the casebook ${rt.casebookPath} failed: ${book.error}; the reader runs without a casebook`);
-  return { rows: book.rows, error: book.state === 'unreadable' ? book.error : undefined };
+  if (book.state === 'unreadable') $.ui.log(`effort-live-control: reading the casebook ${rt.casebookPath} failed: ${book.error}; the reader uses the bundled casebook`);
+  return { ...resolveCasebook(book), error: book.state === 'unreadable' ? book.error : undefined };
 }
 
 // One reader call for a prompt that starts a turn, awaited before the prompt enters. Its decision is the home of the
@@ -462,7 +467,7 @@ async function readPrompt(rt: Runtime, $: EngineInterface, text: string): Promis
   }
   const casebook = await readCasebook(rt, $);
   const built = buildReader(text, await previousReply(rt, $), casebook.rows);
-  const shown = { casebook: built.core.length, precedents: built.precedents.length, ...(casebook.error === undefined ? {} : { casebookError: casebook.error }) };
+  const shown = { casebook: built.core.length, casebookSource: casebook.source, precedents: built.precedents.length, ...(casebook.error === undefined ? {} : { casebookError: casebook.error }) };
   const row = (fields: Fields, answer?: string) => record(rt, $, MAIN, MAIN, { ...fields, ...shown, ...(rt.config.logPackets ? { packet: built.prompt, answer: answer ?? null } : {}) });
   const started = Date.now();
   let reply;
