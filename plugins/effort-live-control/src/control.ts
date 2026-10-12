@@ -29,6 +29,8 @@ export type Setup = {
   judge: boolean;
   /** The judge's probability (0-100) at or above which the level rises one step; below it the level holds. */
   judgeRaiseAt: number;
+  /** The armed tripwire kinds; a disarmed one is counted and remembered but raises nothing. */
+  tripwires: ReadonlySet<Tripwire>;
   /** Agent types whose spawn lands the flight. */
   landing: readonly string[];
   /** Model id prefixes the agent may be steered on. */
@@ -273,6 +275,7 @@ export class Controller {
   }
 
   private tripwire(kind: Tripwire, why: string, actions: Action[], returnHead?: string): void {
+    if (!this.setup.tripwires.has(kind)) return;
     if (!this.struggle) {
       this.struggle = { epoch: ++this.epochs, pre: this.base, requests: 0 };
       this.struggles += 1;
@@ -284,7 +287,14 @@ export class Controller {
       return;
     }
     if (this.inFlight) {
-      actions.push(log('judge-busy', { tripwire: kind }));
+      if (this.inFlight.epoch === this.struggle.epoch) {
+        actions.push(log('judge-busy', { tripwire: kind }));
+        return;
+      }
+      // The call in flight belongs to a struggle that is over: its answer will be dropped, so this one raises on its own.
+      const from = this.level;
+      this.setLevel(step(this.level, +1, this.setup.floor, this.setup.ceiling), why);
+      actions.push(log('mechanical', { tripwire: kind, from, to: this.level, busy: true }));
       return;
     }
     const text = buildPacket({

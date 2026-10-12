@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Controller, type Action, type Outcome, type Setup } from '../plugins/effort-live-control/src/control.ts';
+import { TRIPWIRES } from '../plugins/effort-live-control/src/judge.ts';
 import { DEFAULTS } from '../plugins/effort-live-control/src/settings.ts';
 
 const USAGE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
@@ -13,6 +14,7 @@ function make(over: Partial<Setup> = {}): Controller {
     ceiling: 'xhigh',
     judge: true,
     judgeRaiseAt: 25,
+    tripwires: new Set(TRIPWIRES),
     landing: [],
     models: DEFAULTS.models,
     words: { red: DEFAULTS.redWords, green: DEFAULTS.greenWords },
@@ -345,11 +347,12 @@ describe('a tripwire', () => {
     const c = make();
     fail2(c);
     c.onTestRun(PASS);
+    c.onTestRun(FAIL); // the new struggle's tripwires raise on their own while the old call is out
     c.onTestRun(FAIL);
-    c.onTestRun(FAIL);
+    expect(c.level).toBe('xhigh');
     const out = c.onJudgeAnswer(1, '90 - x', 100, USAGE);
     expect(rows(out, 'judge-stale')).toHaveLength(1);
-    expect(c.level).toBe('medium');
+    expect(c.level).toBe('xhigh');
   });
 
   it('R-8: with the judge off, a tripwire raises one step mechanically, clamped to the ceiling', () => {
@@ -597,5 +600,102 @@ describe('end', () => {
     c.onRequest('claude-opus-5-5', undefined);
     c.onRequest('claude-opus-5-5', undefined);
     expect(c.end()).toEqual({ event: 'end', requests: { medium: 1, high: 2 }, struggles: 1, judgeCalls: 2, judgeTokens: { input: 20, output: 10 } });
+  });
+});
+
+describe('tripwires', () => {
+  const redChild = (c: Controller) => {
+    c.onSpawn({ childId: 'c1', type: 'builder', name: 'b1' });
+    return c.onChildReturn('c1', 'FAIL parser');
+  };
+
+  it('tripwires: the default arms all four', () => {
+    const first = make({ judge: false });
+    expect(rows(first.onTestRun(FAIL), 'mechanical')).toMatchObject([{ tripwire: 'fail1' }]);
+    expect(rows(first.onTestRun(FAIL), 'mechanical')).toMatchObject([{ tripwire: 'fail2' }]);
+    const red = make({ judge: false });
+    expect(rows(redChild(red), 'mechanical')).toMatchObject([{ tripwire: 'red' }]);
+    expect(rows(red.onSpawn({ childId: 'c2', type: 'builder' }), 'mechanical')).toMatchObject([{ tripwire: 'redispatch' }]);
+  });
+
+  it('tripwires: with fail1 off the first failing run holds and the second raises', () => {
+    const c = make({ judge: false, tripwires: new Set(['fail2', 'red', 'redispatch']) });
+    const first = c.onTestRun(FAIL);
+    expect(first.actions).toEqual([]);
+    expect(c.struggleOpen).toBe(false);
+    expect(c.level).toBe('medium');
+    expect(c.ownFails).toBe(1);
+    const second = c.onTestRun(FAIL);
+    expect(rows(second, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail2', from: 'medium', to: 'high' }]);
+    expect(c.level).toBe('high');
+  });
+
+  it('tripwires: a disarmed tripwire still enters the event ring the judge reads', () => {
+    const c = make({ tripwires: new Set(['fail2']) });
+    expect(judges(c.onTestRun(FAIL))).toHaveLength(0);
+    const call = judges(c.onTestRun(FAIL))[0]!;
+    expect(call.tripwire).toBe('fail2');
+    expect(call.packet.match(/- test FAIL: npm test/g)).toHaveLength(2);
+  });
+
+  it('tripwires: with red off a red return holds and a redispatch of it still raises', () => {
+    const c = make({ judge: false, tripwires: new Set(['fail1', 'fail2', 'redispatch']) });
+    const out = redChild(c);
+    expect(out.actions).toEqual([]);
+    expect(c.struggleOpen).toBe(false);
+    expect(c.level).toBe('medium');
+    expect([...c.reds]).toEqual(['parser']);
+    expect(rows(c.onSpawn({ childId: 'c2', type: 'builder' }), 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'redispatch', from: 'medium', to: 'high' }]);
+    expect(c.level).toBe('high');
+  });
+
+  it('tripwires: an empty list arms none', () => {
+    const c = make({ tripwires: new Set() });
+    expect(c.onTestRun(FAIL).actions).toEqual([]);
+    expect(c.onTestRun(FAIL).actions).toEqual([]);
+    expect(c.onTestRun(FAIL).actions).toEqual([]);
+    expect(c.ownFails).toBe(3);
+    expect(redChild(c).actions).toEqual([]);
+    expect(c.onSpawn({ childId: 'c2', type: 'builder' }).actions).toEqual([]);
+    expect(c.onSendMessage('c1').actions).toEqual([]);
+    expect(c.struggleOpen).toBe(false);
+    expect(c.level).toBe('medium');
+    expect(c.end()).toMatchObject({ struggles: 0, judgeCalls: 0 });
+  });
+});
+
+describe('judge-busy', () => {
+  it('judge-busy: a tripwire in a new struggle while the old struggle\'s call is in flight raises one step mechanically', () => {
+    const c = make();
+    expect(judges(c.onTestRun(FAIL))).toHaveLength(1); // epoch 1, in flight
+    c.onTestRun(PASS); // struggle 1 resolves
+    const out = c.onTestRun(FAIL); // struggle 2 opens while call 1 is still out
+    expect(judges(out)).toHaveLength(0);
+    expect(rows(out, 'judge-busy')).toEqual([]);
+    expect(rows(out, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail1', from: 'medium', to: 'high', busy: true }]);
+    expect(c.level).toBe('high');
+    const late = c.onJudgeAnswer(1, '90 - x', 100, USAGE);
+    expect(rows(late, 'judge-stale')).toHaveLength(1);
+    expect(c.level).toBe('high');
+    // the slot is clear: the next tripwire of the open struggle asks the judge
+    expect(judges(c.onTestRun(FAIL))).toHaveLength(1);
+  });
+
+  it('judge-busy: a tripwire in a new struggle clamps at the ceiling', () => {
+    const c = make({ ceiling: 'medium' });
+    c.onTestRun(FAIL);
+    c.onTestRun(PASS);
+    const out = c.onTestRun(FAIL);
+    expect(rows(out, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail1', from: 'medium', to: 'medium', busy: true }]);
+  });
+
+  it('judge-busy: a tripwire in the same struggle while its call is in flight stays judge-busy', () => {
+    const c = make();
+    expect(judges(c.onTestRun(FAIL))).toHaveLength(1);
+    const out = c.onTestRun(FAIL);
+    expect(judges(out)).toHaveLength(0);
+    expect(rows(out, 'mechanical')).toEqual([]);
+    expect(rows(out, 'judge-busy')).toEqual([{ event: 'judge-busy', tripwire: 'fail2' }]);
+    expect(c.level).toBe('medium');
   });
 });

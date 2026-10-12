@@ -1,5 +1,6 @@
 import { isEffort, LEVELS, type Effort } from './effort.ts';
 import { parseFrontmatter } from './frontmatter.ts';
+import { parseTripwires, type Tripwire } from './judge.ts';
 import { rank } from './ladder.ts';
 
 export type AgentFs = {
@@ -16,10 +17,12 @@ export type ControlConfig = {
   /** Agent types whose spawn lands the flight: the steered agent steps one below its home level. */
   landing: string[];
   judge: boolean;
+  /** The armed tripwire kinds; empty arms none. */
+  tripwires: Tripwire[];
 };
 
 /** The option values a frontmatter key falls back to. */
-export type ControlDefaults = { floor: Effort; ceiling: Effort; judge: boolean };
+export type ControlDefaults = { floor: Effort; ceiling: Effort; judge: boolean; tripwires: readonly Tripwire[] };
 
 export type Definition = {
   /** The definition file, or undefined when the type has none (or it could not be read). */
@@ -110,7 +113,7 @@ export class Definitions {
   private control(type: string, path: string, fields: Record<string, string>, report: (line: string) => void): ControlConfig | undefined {
     const invalid = (key: string, why: string, fallback: string) =>
       report(`effort-live-control: ${path} ${key} for ${type} is invalid (${why}); using ${fallback}`);
-    const { floor: defaultFloor, ceiling: defaultCeiling, judge: defaultJudge } = this.defaults;
+    const { floor: defaultFloor, ceiling: defaultCeiling, judge: defaultJudge, tripwires: defaultTripwires } = this.defaults;
     const bare = fields.effortControl;
     if (bare !== undefined && bare.trim() !== '') {
       const on = parseSwitch(bare);
@@ -118,7 +121,7 @@ export class Definitions {
         invalid('effortControl', 'not on, off, true, false, yes or no', 'off');
         return undefined;
       }
-      return on ? { floor: defaultFloor, ceiling: defaultCeiling, landing: [], judge: defaultJudge } : undefined;
+      return on ? { floor: defaultFloor, ceiling: defaultCeiling, landing: [], judge: defaultJudge, tripwires: [...defaultTripwires] } : undefined;
     }
     if (!Object.keys(fields).some((key) => key.startsWith('effortControl.'))) return undefined;
 
@@ -148,7 +151,14 @@ export class Definitions {
       ceiling = defaultCeiling;
     }
     const landing = (fields['effortControl.landing'] ?? '').split(/[\s,]+/).filter((name) => name !== '');
-    return { floor, ceiling, landing, judge: flag('judge', defaultJudge) };
+    let tripwires = [...defaultTripwires];
+    const rawTripwires = fields['effortControl.tripwires'];
+    if (rawTripwires !== undefined) {
+      const found = parseTripwires(rawTripwires);
+      if (found.ok) tripwires = found.value;
+      else invalid('effortControl.tripwires', found.why, tripwires.join(','));
+    }
+    return { floor, ceiling, landing, judge: flag('judge', defaultJudge), tripwires };
   }
 
   private async fields(path: string, type: string, report: (line: string) => void): Promise<Record<string, string> | 'failed'> {

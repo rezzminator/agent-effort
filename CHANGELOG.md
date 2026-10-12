@@ -5,12 +5,16 @@ Every release of effort-live-control (named agent-effort through 0.1.3). Version
 ## [Unreleased]
 
 ### Added
+- The `tripwires` option (default `fail1,fail2,red,redispatch`) and the per-agent `effortControl.tripwires`: a comma list of the armed tripwires, empty arms none; a disarmed one is still counted but opens no struggle and raises nothing. Why, measured over 147 orchestrator runs: the first-failure tripwire raises 18.3% of requests above home against 9.8% without it, and covers 92.3% of struggle requests against 78.0%, so an agent that writes its tests first may turn `fail1` off.
 - The `judgeRaiseAt` option (0 to 100, default 25): with the judge on, a probability at or above it raises the effort one step; below it the effort holds. The judge never lowers.
 - Live effort control. An agent definition with `effortControl` (bare `on`, or nested `floor`, `ceiling`, `landing`, `judge`, `enabled`) is steered: its requests go at a level that rises at a tripwire (its own test run failing, a sub-agent returning `FAIL`, `FAILED`, `BLOCKED`, `PARTIAL` or `SPEC-DRIFT`, a red result sent back to a sub-task) and returns to the level it had once a test run passes and no unit is red. With the judge on, one Haiku call per tripwire (never awaited, so no request waits) estimates the probability that the trouble continues; a call that times out, fails or answers off-format raises one step instead.
 - The `effort_up` and `effort_down` tools: a steered agent moves its own effort one step within its range; any other caller is refused.
 - The agent is told of each change in its next tool result (`announce`).
 - A landing step: spawning a type listed in `effortControl.landing` lowers the agent one step below its home level.
-- Seventeen plugin options (`floor`, `ceiling`, `models`, `judge`, `judgeRaiseAt`, `judgeModel`, `judgeEffort`, `judgeTimeoutMs`, `buttons`, `announce`, `testCommandPatterns`, `failurePatterns`, `redWords`, `greenWords`, `agentDirs`, `logFile`, `logPackets`) and a per-session JSONL decision log, with no prompt or tool-result text unless `logPackets` is on.
+- Eighteen plugin options (`floor`, `ceiling`, `models`, `judge`, `judgeRaiseAt`, `tripwires`, `judgeModel`, `judgeEffort`, `judgeTimeoutMs`, `buttons`, `announce`, `testCommandPatterns`, `failurePatterns`, `redWords`, `greenWords`, `agentDirs`, `logFile`, `logPackets`) and a per-session JSONL decision log, with no prompt or tool-result text unless `logPackets` is on.
+
+### Fixed
+- A tripwire that arrives while a judge call for an already closed struggle is still in flight raises one step mechanically (`mechanical` row with `busy: true`) instead of being swallowed as `judge-busy`; the stale answer is still dropped.
 
 ### Changed
 - The first failing test run is a tripwire: it raises the effort one step (kind `fail1`, announced as `a failing test run`); the 2nd in a row and every even count after it still fire (kind `fail2`).

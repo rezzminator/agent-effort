@@ -2,7 +2,7 @@ import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { Definitions, type ControlConfig, type Definition } from '../src/agents.ts';
 import { Controller, type Action } from '../src/control.ts';
 import { describe, denyText, EMPTY_TEXT, isStillRunning, parseTag, stepEffort, stripTag, type Effort, type Pin } from '../src/effort.ts';
-import { JUDGE_SYSTEM } from '../src/judge.ts';
+import { JUDGE_SYSTEM, parseTripwires, TRIPWIRES } from '../src/judge.ts';
 import { isLevel } from '../src/ladder.ts';
 import { appendRows, sessionLogPath } from '../src/log.ts';
 import { compile, resolveSettings, type Compiled, type Settings } from '../src/settings.ts';
@@ -138,6 +138,12 @@ function record(rt: Runtime, $: EngineInterface, agent: string, type: string, ro
     .catch((error) => $.ui.log(`effort-live-control: writing the decision log for ${file} failed: ${message(error)}`));
 }
 
+// The option was validated when the settings resolved, so a list that fails here is a bug: arm all four rather than none.
+function tripwiresOf(text: string) {
+  const found = parseTripwires(text);
+  return found.ok ? found.value : [...TRIPWIRES];
+}
+
 // First hook call: read where definitions live, report option errors, build the resolver.
 function start(rt: Runtime, $: EngineInterface): Promise<void> {
   rt.started ??= (async () => {
@@ -169,7 +175,7 @@ function start(rt: Runtime, $: EngineInterface): Promise<void> {
     const dirs = [`${cwd}/.claude/agents`, ...(configDir ? [`${configDir}/agents`] : []), ...(home ? [`${home}/.claude/agents`] : []), ...rt.config.agentDirs];
     rt.defs = new Definitions(
       dirs,
-      { floor: rt.config.floor, ceiling: rt.config.ceiling, judge: rt.config.judge },
+      { floor: rt.config.floor, ceiling: rt.config.ceiling, judge: rt.config.judge, tripwires: tripwiresOf(rt.config.tripwires) },
       {
         exists: (path) => $.fs.exists(path),
         read: (path) => $.fs.read(path),
@@ -202,6 +208,7 @@ function newController(rt: Runtime, id: string, type: string, control: ControlCo
     ceiling: control.ceiling,
     judge: control.judge,
     judgeRaiseAt: rt.config.judgeRaiseAt,
+    tripwires: new Set(control.tripwires),
     landing: control.landing,
     models: rt.config.models,
     words: { red: rt.config.redWords, green: rt.config.greenWords },

@@ -54,6 +54,17 @@ describe('plugin options', () => {
     }
   });
 
+  it('tripwires: the default is fail1,fail2,red,redispatch in the code, the manifest and both READMEs', () => {
+    expect(DEFAULTS.tripwires).toBe('fail1,fail2,red,redispatch');
+    expect(manifest.userConfig.tripwires).toMatchObject({ type: 'string', default: 'fail1,fail2,red,redispatch' });
+    expect(manifest.userConfig.tripwires.multiple).toBeUndefined();
+    for (const [path, readme] of readmes) {
+      const row = readme.split('\n').find((line) => line.startsWith('| `tripwires` |'));
+      expect(row, path).toContain('| `fail1,fail2,red,redispatch` |');
+      expect(readme, path).toContain('`effortControl.tripwires`');
+    }
+  });
+
   it('keeps the two READMEs\' option tables identical', () => {
     const table = (text: string) => text.split('\n').filter((line) => SETTING_KEYS.some((key) => line.startsWith(`| \`${key}\` |`)));
     expect(table(readmes[1]![1])).toEqual(table(readmes[0]![1]));

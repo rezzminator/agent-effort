@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parseTripwires } from '../plugins/effort-live-control/src/judge.ts';
 import { compile, DEFAULTS, resolveSettings, SETTING_KEYS } from '../plugins/effort-live-control/src/settings.ts';
 
 describe('resolveSettings', () => {
@@ -23,14 +24,15 @@ describe('resolveSettings', () => {
       agentDirs: [],
       logFile: '~/.local/state/effort-live-control/decisions.jsonl',
       logPackets: false,
+      tripwires: 'fail1,fail2,red,redispatch',
     });
     expect(DEFAULTS.testCommandPatterns).toHaveLength(15);
     expect(DEFAULTS.failurePatterns).toHaveLength(6);
-    expect(SETTING_KEYS).toHaveLength(17);
+    expect(SETTING_KEYS).toHaveLength(18);
   });
 
   it('reads valid values of every kind', () => {
-    const raw = { floor: 'low', ceiling: 'max', models: ['claude-x'], judge: true, judgeRaiseAt: 50, judgeModel: 'sonnet', judgeEffort: 'high', judgeTimeoutMs: 9000, buttons: false, announce: false, redWords: ['NO'], greenWords: ['YES'], agentDirs: ['/x'], logFile: '', logPackets: true };
+    const raw = { floor: 'low', ceiling: 'max', models: ['claude-x'], judge: true, judgeRaiseAt: 50, judgeModel: 'sonnet', judgeEffort: 'high', judgeTimeoutMs: 9000, buttons: false, announce: false, redWords: ['NO'], greenWords: ['YES'], agentDirs: ['/x'], logFile: '', logPackets: true, tripwires: 'fail2, red' };
     expect(resolveSettings(raw)).toEqual({ settings: { ...DEFAULTS, ...raw }, errors: [] });
   });
 
@@ -86,6 +88,32 @@ describe('resolveSettings', () => {
 
   it('R-16: an empty logFile text turns the log off', () => {
     expect(resolveSettings({ logFile: '' }).settings.logFile).toBe('');
+  });
+});
+
+describe('tripwires option', () => {
+  it('tripwires: the default arms all four', () => {
+    expect(DEFAULTS.tripwires).toBe('fail1,fail2,red,redispatch');
+    expect(parseTripwires(DEFAULTS.tripwires)).toEqual({ ok: true, value: ['fail1', 'fail2', 'red', 'redispatch'] });
+    expect(resolveSettings({}).errors).toEqual([]);
+  });
+
+  it('tripwires: whitespace around names is ignored, case is not significant and a repeat counts once', () => {
+    expect(parseTripwires(' red ,  fail2\t, RED')).toEqual({ ok: true, value: ['red', 'fail2'] });
+    expect(resolveSettings({ tripwires: ' fail2 , red ' })).toEqual({ settings: { ...DEFAULTS, tripwires: ' fail2 , red ' }, errors: [] });
+  });
+
+  it('tripwires: an empty list arms none', () => {
+    expect(parseTripwires('')).toEqual({ ok: true, value: [] });
+    expect(parseTripwires('  ')).toEqual({ ok: true, value: [] });
+    expect(resolveSettings({ tripwires: '' })).toEqual({ settings: { ...DEFAULTS, tripwires: '' }, errors: [] });
+  });
+
+  it('tripwires: an unknown name is reported and the default applies', () => {
+    const { settings, errors } = resolveSettings({ tripwires: 'fail1,boom' });
+    expect(settings.tripwires).toBe('fail1,fail2,red,redispatch');
+    expect(errors).toEqual(['effort-live-control: option "tripwires" is "fail1,boom", "boom" is not a tripwire (fail1, fail2, red, redispatch); using the default "fail1,fail2,red,redispatch"']);
+    expect(resolveSettings({ tripwires: 7 }).errors).toHaveLength(1);
   });
 });
 

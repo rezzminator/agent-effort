@@ -618,6 +618,54 @@ suite('own test runs and the judge', () => {
   });
 });
 
+suite('tripwires', () => {
+  it('tripwires: the option disarms a kind for every steered agent', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false, tripwires: 'fail2,red,redispatch' });
+    await run('npm test', 'FAIL a');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    await run('npm test', 'FAIL a');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect((await x.rows()).filter((row) => row.event === 'mechanical')).toMatchObject([{ tripwire: 'fail2' }]);
+  });
+
+  it('tripwires: frontmatter overrides the option for that agent', async () => {
+    const files = { ...agentFile('lead', 'effort: medium\neffortControl:\n  tripwires: red'), ...agentFile('plain', 'effort: medium\neffortControl: on') };
+    const x = engine(new Map(), { files, options: { judge: false } });
+    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
+    await x.spawned('Build Y.', 'P1', { subagentType: 'plain' });
+    const run = (id: string) => x.tool(id, 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    await run('L1');
+    await run('L1');
+    await run('P1');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    expect(await x.step('P1', 'low', undefined, OPUS)).toBe('high');
+    expect((await x.rows()).filter((row) => row.event === 'mechanical')).toMatchObject([{ agent: 'P1', tripwire: 'fail1' }]);
+  });
+
+  it('tripwires: an unknown name in the frontmatter is logged naming the agent type and the default applies', async () => {
+    const files = agentFile('lead', 'effort: medium\neffortControl:\n  tripwires: fail1, boom');
+    const { x, run } = await withLead(files, { judge: false });
+    await run('npm test', 'FAIL a');
+    expect(x.logs).toContain('effort-live-control: /proj/.claude/agents/lead.md effortControl.tripwires for lead is invalid ("boom" is not a tripwire (fail1, fail2, red, redispatch)); using fail1,fail2,red,redispatch');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+  });
+
+  it('tripwires: an unknown name in the option is reported once at start and the default applies', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false, tripwires: 'boom' });
+    await run('npm test', 'FAIL a');
+    expect(x.logs.filter((line) => line.includes('option "tripwires"'))).toHaveLength(1);
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+  });
+
+  it('tripwires: an empty list arms none', async () => {
+    const { x, failTwice } = await withLead(LEAD, { judge: true, tripwires: '' });
+    await failTwice();
+    expect(x.judgeCalls).toHaveLength(0);
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    expect((await x.rows()).filter((row) => ['mechanical', 'judge', 'judge-busy'].includes(String(row.event)))).toEqual([]);
+  });
+});
+
 suite('children', () => {
   const child = async (x: ReturnType<typeof engine>, id = 'C1', type = 'builder', extra: Record<string, unknown> = {}) => {
     await x.spawned('Build part.', id, { subagentType: type, parentAgentId: 'L1', ...extra });

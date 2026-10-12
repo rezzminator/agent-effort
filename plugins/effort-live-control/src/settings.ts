@@ -2,6 +2,7 @@
 // A bad value is reported by key and value, and the default applies.
 
 import { isEffort, LEVELS, type Effort } from './effort.ts';
+import { parseTripwires } from './judge.ts';
 import { rank } from './ladder.ts';
 
 export type Settings = {
@@ -10,6 +11,8 @@ export type Settings = {
   models: string[];
   judge: boolean;
   judgeRaiseAt: number;
+  /** A comma list of the armed tripwire kinds: fail1, fail2, red, redispatch. Empty arms none. */
+  tripwires: string;
   judgeModel: string;
   judgeEffort: Effort;
   judgeTimeoutMs: number;
@@ -30,6 +33,7 @@ export const DEFAULTS: Settings = {
   models: ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5'],
   judge: false,
   judgeRaiseAt: 25,
+  tripwires: 'fail1,fail2,red,redispatch',
   judgeModel: 'haiku',
   judgeEffort: 'xhigh',
   judgeTimeoutMs: 45000,
@@ -95,6 +99,12 @@ const parsePercent = (raw: unknown): Parsed<number> => {
 
 const parseText = (raw: unknown): Parsed<string> => (typeof raw === 'string' ? good(raw) : bad('not text'));
 
+function parseTripwireList(raw: unknown): Parsed<string> {
+  if (typeof raw !== 'string') return bad('not text');
+  const found = parseTripwires(raw);
+  return found.ok ? good(raw) : bad(found.why);
+}
+
 const parseModel = (raw: unknown): Parsed<string> =>
   typeof raw === 'string' && /^\S+$/.test(raw) ? good(raw) : bad('not a model alias or id (text without spaces)');
 
@@ -133,6 +143,7 @@ const PARSERS: { [K in keyof Settings]: (raw: unknown) => Parsed<Settings[K] | '
   models: listOf(modelItem),
   judge: parseBool,
   judgeRaiseAt: parsePercent,
+  tripwires: parseTripwireList,
   judgeModel: parseModel,
   judgeEffort: parseLevel,
   judgeTimeoutMs: parseInt1,

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Definitions, type AgentFs, type ControlDefaults } from '../plugins/effort-live-control/src/agents.ts';
 
-const DEFAULTS: ControlDefaults = { floor: 'medium', ceiling: 'xhigh', judge: true };
+const ALL = ['fail1', 'fail2', 'red', 'redispatch'] as const;
+const DEFAULTS: ControlDefaults = { floor: 'medium', ceiling: 'xhigh', judge: true, tripwires: ALL };
 
 // A stand-in file system: a map of path → text; a path listed in `broken` fails to read.
 function standIn(files: Record<string, string>, broken: string[] = []) {
@@ -71,6 +72,27 @@ describe('Definitions.resolve', () => {
   });
 });
 
+describe('effortControl.tripwires', () => {
+  const control = async (frontmatter: string) => {
+    const x = standIn({ '/a/t.md': `---\nname: t\n${frontmatter}\n---\n` });
+    return { found: await x.defs(['/a']).resolve('t'), logs: x.logs };
+  };
+
+  it('tripwires: the key reads a comma list for that agent', async () => {
+    expect((await control('effortControl:\n  tripwires: fail2, red')).found.control?.tripwires).toEqual(['fail2', 'red']);
+  });
+
+  it('tripwires: an empty key arms none', async () => {
+    expect((await control('effortControl:\n  tripwires:')).found.control?.tripwires).toEqual([]);
+  });
+
+  it('tripwires: an unknown name is logged with its key, the type and the default, and the default used', async () => {
+    const { found, logs } = await control('effortControl:\n  tripwires: fail1, boom');
+    expect(found.control?.tripwires).toEqual([...ALL]);
+    expect(logs).toEqual(['effort-live-control: /a/t.md effortControl.tripwires for t is invalid ("boom" is not a tripwire (fail1, fail2, red, redispatch)); using fail1,fail2,red,redispatch']);
+  });
+});
+
 describe('effortControl', () => {
   const control = async (frontmatter: string) => {
     const x = standIn({ '/a/t.md': `---\nname: t\n${frontmatter}\n---\n` });
@@ -79,7 +101,7 @@ describe('effortControl', () => {
   };
 
   it.each(['on', 'true', 'yes', 'ON', 'Yes'])('R-3: bare effortControl: %s switches steering on with the option defaults', async (word) => {
-    expect((await control(`effortControl: ${word}`)).found.control).toEqual({ floor: 'medium', ceiling: 'xhigh', landing: [], judge: true });
+    expect((await control(`effortControl: ${word}`)).found.control).toEqual({ floor: 'medium', ceiling: 'xhigh', landing: [], judge: true, tripwires: [...ALL] });
   });
 
   it.each(['off', 'false', 'no', 'OFF'])('R-3: bare effortControl: %s leaves the agent unsteered', async (word) => {
@@ -92,7 +114,7 @@ describe('effortControl', () => {
 
   it('R-3: the nested form is on by default and reads floor, ceiling, landing and judge', async () => {
     const { found } = await control('effortControl:\n  floor: low\n  ceiling: max\n  landing: lander, reviewer  tester\n  judge: off');
-    expect(found.control).toEqual({ floor: 'low', ceiling: 'max', landing: ['lander', 'reviewer', 'tester'], judge: false });
+    expect(found.control).toEqual({ floor: 'low', ceiling: 'max', landing: ['lander', 'reviewer', 'tester'], judge: false, tripwires: [...ALL] });
   });
 
   it('R-3: nested enabled: off turns steering off whatever else is set', async () => {
@@ -102,7 +124,7 @@ describe('effortControl', () => {
 
   it('R-3: an invalid value is logged with its key, the type and the default, and the default used', async () => {
     const { found, logs } = await control('effortControl:\n  floor: sideways\n  ceiling: max');
-    expect(found.control).toEqual({ floor: 'medium', ceiling: 'max', landing: [], judge: true });
+    expect(found.control).toEqual({ floor: 'medium', ceiling: 'max', landing: [], judge: true, tripwires: [...ALL] });
     const line = 'effort-live-control: /a/t.md effortControl.floor for t is invalid (not a level: low, medium, high, xhigh, max); using medium';
     expect(logs).toEqual([line]);
     expect(found.errors).toEqual([line]);
@@ -124,8 +146,8 @@ describe('effortControl', () => {
   it('R-3: the option defaults come from the settings, not constants', async () => {
     const files = { '/a/t.md': '---\nname: t\neffortControl: on\n---\n' };
     const x = standIn(files);
-    const defs = new Definitions(['/a'], { floor: 'low', ceiling: 'high', judge: false }, { exists: async () => true, read: async () => files['/a/t.md'], listMarkdown: async () => [] }, () => {});
-    expect((await defs.resolve('t')).control).toEqual({ floor: 'low', ceiling: 'high', landing: [], judge: false });
+    const defs = new Definitions(['/a'], { floor: 'low', ceiling: 'high', judge: false, tripwires: ['red'] }, { exists: async () => true, read: async () => files['/a/t.md'], listMarkdown: async () => [] }, () => {});
+    expect((await defs.resolve('t')).control).toEqual({ floor: 'low', ceiling: 'high', landing: [], judge: false, tripwires: ['red'] });
     expect(x.logs).toEqual([]);
   });
 });

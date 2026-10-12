@@ -34,7 +34,19 @@ export function parseAnswer(text: string): { p: number; reason: string } | undef
   return { p, reason: cut < 0 ? '' : clean.slice(cut + 3).trim().slice(0, REASON_MAX) };
 }
 
-export type Tripwire = 'fail1' | 'fail2' | 'red' | 'redispatch';
+export const TRIPWIRES = ['fail1', 'fail2', 'red', 'redispatch'] as const;
+export type Tripwire = (typeof TRIPWIRES)[number];
+
+/** A comma list of tripwire names: case-insensitive, whitespace and repeats ignored, empty arms none; or the first name that is not one. */
+export function parseTripwires(text: string): { ok: true; value: Tripwire[] } | { ok: false; why: string } {
+  const value: Tripwire[] = [];
+  for (const entry of text.split(',').map((name) => name.trim().toLowerCase()).filter((name) => name !== '')) {
+    const kind = TRIPWIRES.find((candidate) => candidate === entry);
+    if (kind === undefined) return { ok: false, why: `${JSON.stringify(entry)} is not a tripwire (${TRIPWIRES.join(', ')})` };
+    if (!value.includes(kind)) value.push(kind);
+  }
+  return { ok: true, value };
+}
 
 const TRIPWIRE_TEXT: Readonly<Record<Tripwire, string>> = {
   fail1: 'a failing test run',

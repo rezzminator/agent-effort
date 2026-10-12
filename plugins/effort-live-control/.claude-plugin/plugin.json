@@ -62,6 +62,12 @@
       "min": 0,
       "max": 100
     },
+    "tripwires": {
+      "type": "string",
+      "title": "tripwires: which events raise the effort",
+      "description": "The armed tripwires, comma-separated: fail1 (the first failing test run), fail2 (the 2nd failing run in a row, then every even count), red (a sub-task returned red), redispatch (a red result sent back). A disarmed tripwire is counted but raises nothing; empty arms none. An agent's effortControl.tripwires overrides it.",
+      "default": "fail1,fail2,red,redispatch"
+    },
     "judgeModel": {
       "type": "string",
       "title": "judgeModel: the model that judges",
