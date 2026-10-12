@@ -42,6 +42,18 @@ describe('plugin options', () => {
     }
   });
 
+  it('judge is false and judgeRaiseAt is 25 in the code, the manifest and both READMEs', () => {
+    expect(DEFAULTS.judge).toBe(false);
+    expect(DEFAULTS.judgeRaiseAt).toBe(25);
+    expect(manifest.userConfig.judge.default).toBe(false);
+    expect(manifest.userConfig.judgeRaiseAt).toMatchObject({ type: 'number', default: 25, min: 0, max: 100 });
+    for (const [path, readme] of readmes) {
+      const row = (key: string) => readme.split('\n').find((line) => line.startsWith(`| \`${key}\` |`));
+      expect(row('judge'), path).toContain('| `false` |');
+      expect(row('judgeRaiseAt'), path).toContain('| `25` |');
+    }
+  });
+
   it('keeps the two READMEs\' option tables identical', () => {
     const table = (text: string) => text.split('\n').filter((line) => SETTING_KEYS.some((key) => line.startsWith(`| \`${key}\` |`)));
     expect(table(readmes[1]![1])).toEqual(table(readmes[0]![1]));

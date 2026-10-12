@@ -201,6 +201,7 @@ function newController(rt: Runtime, id: string, type: string, control: ControlCo
     floor: control.floor,
     ceiling: control.ceiling,
     judge: control.judge,
+    judgeRaiseAt: rt.config.judgeRaiseAt,
     landing: control.landing,
     models: rt.config.models,
     words: { red: rt.config.redWords, green: rt.config.greenWords },

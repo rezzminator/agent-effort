@@ -3,9 +3,9 @@
 
 import type { Effort } from './effort.ts';
 import { collapse, packet as buildPacket, parseAnswer, type Tripwire } from './judge.ts';
-import { clamp, rank, step } from './ladder.ts';
+import { clamp, step } from './ladder.ts';
 import { returnLine, type ReturnWords } from './signals.ts';
-import { announceLine, boundText, buttonText, whyChild, whyJudge, whyRedispatch, whyResolved, WHY_FAIL2, WHY_JUDGE_FAILED, WHY_LANDING, type Direction } from './text.ts';
+import { announceLine, boundText, buttonText, whyChild, whyJudge, whyRedispatch, whyResolved, WHY_FAIL1, WHY_FAIL2, WHY_JUDGE_FAILED, WHY_LANDING, type Direction } from './text.ts';
 
 export type Row = Record<string, unknown>;
 
@@ -27,6 +27,8 @@ export type Setup = {
   ceiling: Effort;
   /** Whether a tripwire asks the judge (else it raises one step mechanically). */
   judge: boolean;
+  /** The judge's probability (0-100) at or above which the level rises one step; below it the level holds. */
+  judgeRaiseAt: number;
   /** Agent types whose spawn lands the flight. */
   landing: readonly string[];
   /** Model id prefixes the agent may be steered on. */
@@ -119,7 +121,8 @@ export class Controller {
     if (run.failed) {
       this.ownFails += 1;
       this.failTail = collapse(run.text).slice(-FAIL_TAIL_MAX);
-      if (this.ownFails % 2 === 0) this.tripwire('fail2', WHY_FAIL2, actions);
+      if (this.ownFails === 1) this.tripwire('fail1', WHY_FAIL1, actions);
+      else if (this.ownFails % 2 === 0) this.tripwire('fail2', WHY_FAIL2, actions);
     } else {
       this.ownFails = 0;
       this.resolve(actions);
@@ -183,14 +186,14 @@ export class Controller {
       actions.push(log('judge-stale', { tripwire, epoch }, detail));
       return { actions };
     }
-    const parsed = parseAnswer(text, allowedLevels(this.setup.floor, this.setup.ceiling));
+    const parsed = parseAnswer(text);
     if (!parsed) {
       this.failed(epoch, tripwire, 'unparseable answer', actions, detail);
       return { actions };
     }
     const from = this.level;
-    this.setLevel(parsed.level, whyJudge(parsed.reason));
-    actions.push(log('judge', { tripwire, from, to: this.level, reason: parsed.reason, ms, usage }, detail));
+    if (parsed.p >= this.setup.judgeRaiseAt) this.setLevel(step(this.level, +1, this.setup.floor, this.setup.ceiling), whyJudge(parsed.reason));
+    actions.push(log('judge', { tripwire, p: parsed.p, from, to: this.level, reason: parsed.reason, ms, usage }, detail));
     return { actions };
   }
 
@@ -318,9 +321,4 @@ export class Controller {
     this.setLevel(pre, whyResolved(pre));
     actions.push(log('resolved', { from, to: this.level, requests }));
   }
-}
-
-function allowedLevels(floor: Effort, ceiling: Effort): Effort[] {
-  const all: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-  return all.filter((level) => rank(level) >= rank(floor) && rank(level) <= rank(ceiling));
 }

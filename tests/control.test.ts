@@ -12,6 +12,7 @@ function make(over: Partial<Setup> = {}): Controller {
     floor: 'medium',
     ceiling: 'xhigh',
     judge: true,
+    judgeRaiseAt: 25,
     landing: [],
     models: DEFAULTS.models,
     words: { red: DEFAULTS.redWords, green: DEFAULTS.greenWords },
@@ -26,9 +27,10 @@ const judges = (o: Outcome) => o.actions.filter((a): a is Extract<Action, { kind
 const FAIL = { command: 'npm test', failed: true, text: 'expected 3 got 4' };
 const PASS = { command: 'npm test', failed: false, text: 'ok' };
 
-/** Drives a controller to its 2nd failing run and returns the judge action. */
+/** Drives a judge-on controller through a first failing run (answered "hold") to its 2nd, and returns the 2nd's judge action. */
 function fail2(c: Controller): Extract<Action, { kind: 'judge' }> {
   c.onTestRun(FAIL);
+  c.onJudgeAnswer(1, '10 - hold', 1, USAGE);
   return judges(c.onTestRun(FAIL))[0]!;
 }
 
@@ -72,26 +74,50 @@ describe('onRequest', () => {
 });
 
 describe('own test runs', () => {
-  it('R-5: the 2nd failing test run with no pass between fires the judge', () => {
-    const c = make();
-    expect(judges(c.onTestRun(FAIL))).toHaveLength(0);
-    const second = c.onTestRun(FAIL);
-    expect(judges(second)).toHaveLength(1);
-    expect(judges(second)[0]).toMatchObject({ tripwire: 'fail2', epoch: 1 });
+  it('R-5: the first failing test run raises one step (judge off) and logs the fail1 tripwire', () => {
+    const c = make({ judge: false });
+    const out = c.onTestRun(FAIL);
+    expect(c.level).toBe('high');
+    expect(rows(out, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail1', from: 'medium', to: 'high' }]);
+    expect(c.takeAnnouncement()).toBe('effort-live-control: your reasoning effort is now high — a failing test run.');
   });
 
-  it('R-5: a pass between failures resets the count', () => {
-    const c = make();
+  it('R-5: the second failing run raises again up to the ceiling', () => {
+    const c = make({ judge: false, ceiling: 'xhigh' });
+    c.onTestRun(FAIL);
+    const second = c.onTestRun(FAIL);
+    expect(rows(second, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail2', from: 'high', to: 'xhigh' }]);
+    expect(c.level).toBe('xhigh');
+    c.onTestRun(FAIL);
+    const fourth = c.onTestRun(FAIL);
+    expect(rows(fourth, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail2', from: 'xhigh', to: 'xhigh' }]);
+    expect(c.level).toBe('xhigh');
+  });
+
+  it('R-5: a pass between failures restarts the count at the first', () => {
+    const c = make({ judge: false });
     c.onTestRun(FAIL);
     c.onTestRun(PASS);
-    expect(judges(c.onTestRun(FAIL))).toHaveLength(0);
+    expect(c.level).toBe('medium');
+    const out = c.onTestRun(FAIL);
+    expect(rows(out, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail1', from: 'medium', to: 'high' }]);
     expect(c.ownFails).toBe(1);
   });
 
-  it('R-5: fires again at the 4th and 6th failure, not at the 3rd or 5th', () => {
+  it('R-5: with the judge on, the first failing run asks the judge as fail1 and the 2nd as fail2', () => {
+    const c = make();
+    const first = judges(c.onTestRun(FAIL));
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({ tripwire: 'fail1', epoch: 1 });
+    expect(first[0]!.packet).toContain('tripwire: a failing test run\n');
+    expect(judges(c.onTestRun(FAIL))).toHaveLength(0);
+    expect(fail2(make())).toMatchObject({ tripwire: 'fail2', epoch: 1 });
+  });
+
+  it('R-5: fires at the 1st, 2nd, 4th and 6th failure, not at the 3rd or 5th', () => {
     const c = make({ judge: false });
-    const fired = [1, 2, 3, 4, 5, 6].map(() => rows(c.onTestRun(FAIL), 'mechanical').length);
-    expect(fired).toEqual([0, 1, 0, 1, 0, 1]);
+    const fired = [1, 2, 3, 4, 5, 6].map(() => rows(c.onTestRun(FAIL), 'mechanical').map((row) => row.tripwire));
+    expect(fired).toEqual([['fail1'], ['fail2'], [], ['fail2'], [], ['fail2']]);
   });
 
   it('R-5: the packet carries the tripwire, the events and the failing output tail', () => {
@@ -243,16 +269,58 @@ describe('a tripwire', () => {
     const c = make();
     fail2(c);
     expect(c.onRequest('claude-opus-5-5', undefined).send).toBe('medium');
-    c.onJudgeAnswer(1, 'xhigh - same test fails after the fix', 800, USAGE);
-    expect(c.onRequest('claude-opus-5-5', undefined).send).toBe('xhigh');
+    c.onJudgeAnswer(1, '85 - same test fails after the fix', 800, USAGE);
+    expect(c.onRequest('claude-opus-5-5', undefined).send).toBe('high');
   });
 
-  it('R-8: an answer sets the level and logs the judge row with its tripwire, levels, reason, time and usage', () => {
+  it('R-8: with the judge on, p at or above judgeRaiseAt raises one step', () => {
+    const at = make();
+    fail2(at);
+    at.onJudgeAnswer(1, '25 - exactly at the line', 5, USAGE);
+    expect(at.level).toBe('high');
+    const above = make({ ceiling: 'max', home: 'xhigh' });
+    fail2(above);
+    above.onJudgeAnswer(1, '100 - certain', 5, USAGE);
+    expect(above.level).toBe('max');
+    const custom = make({ judgeRaiseAt: 60 });
+    fail2(custom);
+    custom.onJudgeAnswer(1, '60 - at the custom line', 5, USAGE);
+    expect(custom.level).toBe('high');
+  });
+
+  it('R-8: with the judge on, p below judgeRaiseAt holds the current level', () => {
     const c = make();
     fail2(c);
-    const out = c.onJudgeAnswer(1, 'high - cause unknown', 812, USAGE);
+    const out = c.onJudgeAnswer(1, '24 - plain fix', 5, USAGE);
+    expect(c.level).toBe('medium');
+    expect(c.takeAnnouncement()).toBeUndefined();
+    expect(rows(out, 'judge')).toEqual([{ event: 'judge', tripwire: 'fail2', p: 24, from: 'medium', to: 'medium', reason: 'plain fix', ms: 5, usage: USAGE }]);
+    const custom = make({ judgeRaiseAt: 60 });
+    fail2(custom);
+    custom.onJudgeAnswer(1, '59 - below the custom line', 5, USAGE);
+    expect(custom.level).toBe('medium');
+  });
+
+  it('R-8: the judge never lowers', () => {
+    const c = make({ home: 'high' });
+    fail2(c);
+    c.onJudgeAnswer(1, '0 - nothing wrong', 5, USAGE);
     expect(c.level).toBe('high');
-    expect(rows(out, 'judge')).toEqual([{ event: 'judge', tripwire: 'fail2', from: 'medium', to: 'high', reason: 'cause unknown', ms: 812, usage: USAGE }]);
+    c.onTestRun(FAIL);
+    const j = judges(c.onTestRun(FAIL))[0]!;
+    expect(j.tripwire).toBe('fail2');
+    const top = make({ home: 'xhigh' });
+    fail2(top);
+    top.onJudgeAnswer(1, '99 - at the ceiling', 5, USAGE);
+    expect(top.level).toBe('xhigh');
+  });
+
+  it('R-8: an answer logs the judge row with its tripwire, p, levels, reason, time and usage', () => {
+    const c = make();
+    fail2(c);
+    const out = c.onJudgeAnswer(1, '70 - cause unknown', 812, USAGE);
+    expect(c.level).toBe('high');
+    expect(rows(out, 'judge')).toEqual([{ event: 'judge', tripwire: 'fail2', p: 70, from: 'medium', to: 'high', reason: 'cause unknown', ms: 812, usage: USAGE }]);
   });
 
   it('R-8: a second tripwire while a call is in flight logs judge-busy and starts no other call', () => {
@@ -268,7 +336,7 @@ describe('a tripwire', () => {
     const c = make();
     fail2(c);
     c.onTestRun(PASS);
-    const out = c.onJudgeAnswer(1, 'max - x', 100, USAGE);
+    const out = c.onJudgeAnswer(1, '90 - x', 100, USAGE);
     expect(rows(out, 'judge-stale')).toHaveLength(1);
     expect(c.level).toBe('medium');
   });
@@ -279,18 +347,19 @@ describe('a tripwire', () => {
     c.onTestRun(PASS);
     c.onTestRun(FAIL);
     c.onTestRun(FAIL);
-    const out = c.onJudgeAnswer(1, 'xhigh - x', 100, USAGE);
+    const out = c.onJudgeAnswer(1, '90 - x', 100, USAGE);
     expect(rows(out, 'judge-stale')).toHaveLength(1);
     expect(c.level).toBe('medium');
   });
 
   it('R-8: with the judge off, a tripwire raises one step mechanically, clamped to the ceiling', () => {
     const c = make({ judge: false, ceiling: 'high' });
-    c.onTestRun(FAIL);
-    const out = c.onTestRun(FAIL);
-    expect(judges(out)).toHaveLength(0);
-    expect(rows(out, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail2', from: 'medium', to: 'high' }]);
+    const first = c.onTestRun(FAIL);
+    expect(judges(first)).toHaveLength(0);
+    expect(rows(first, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail1', from: 'medium', to: 'high' }]);
     expect(c.level).toBe('high');
+    const second = c.onTestRun(FAIL);
+    expect(rows(second, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail2', from: 'high', to: 'high' }]);
     c.onTestRun(FAIL);
     c.onTestRun(FAIL);
     expect(c.level).toBe('high');
@@ -306,7 +375,7 @@ describe('a judge that gives no level', () => {
     expect(rows(out, 'judge-failed')).toEqual([{ event: 'judge-failed', tripwire: 'fail2', reason: 'aborted', from: 'medium', to: 'high' }]);
   });
 
-  it('R-9: an answer that does not parse raises one step the same way', () => {
+  it('R-9: an answer without a leading number is unparsed and raises one step', () => {
     const c = make();
     fail2(c);
     const out = c.onJudgeAnswer(1, 'I think maybe high', 700, USAGE);
@@ -314,10 +383,10 @@ describe('a judge that gives no level', () => {
     expect(rows(out, 'judge-failed')[0]).toMatchObject({ reason: 'unparseable answer' });
   });
 
-  it('R-9: an answer outside floor..ceiling does not parse', () => {
+  it('R-9: a number above 100 does not parse', () => {
     const c = make();
     fail2(c);
-    c.onJudgeAnswer(1, 'max - panic', 700, USAGE);
+    c.onJudgeAnswer(1, '150 - panic', 700, USAGE);
     expect(c.level).toBe('high');
   });
 
@@ -343,7 +412,7 @@ describe('resolution', () => {
   it('R-10: a passing test run with no red unit restores the pre-struggle level and logs resolved', () => {
     const c = make({ home: 'high' });
     fail2(c);
-    c.onJudgeAnswer(1, 'xhigh - stuck', 100, USAGE);
+    c.onJudgeAnswer(1, '90 - stuck', 100, USAGE);
     c.onRequest('claude-opus-5-5', undefined);
     c.onRequest('claude-opus-5-5', undefined);
     const out = c.onTestRun(PASS);
@@ -382,7 +451,7 @@ describe('resolution', () => {
     fail2(c);
     c.onTestRun(PASS);
     expect(c.struggleOpen).toBe(false);
-    c.onJudgeAnswer(1, 'max - x', 1, USAGE);
+    c.onJudgeAnswer(1, '90 - x', 1, USAGE);
     expect(c.level).toBe('medium');
   });
 });
@@ -408,7 +477,7 @@ describe('landing', () => {
   it('R-11: during a struggle landing moves the level it resolves to, not the current one', () => {
     const c = make({ home: 'high', landing: ['lander'] });
     fail2(c);
-    c.onJudgeAnswer(1, 'xhigh - stuck', 1, USAGE);
+    c.onJudgeAnswer(1, '90 - stuck', 1, USAGE);
     c.onSpawn({ childId: 'c1', type: 'lander' });
     expect(c.level).toBe('xhigh');
     c.onTestRun(PASS);
@@ -461,8 +530,9 @@ describe('announcements', () => {
   it('queues one line per level change, handed over once', () => {
     const c = make({ judge: false });
     c.onTestRun(FAIL);
+    expect(c.takeAnnouncement()).toBe('effort-live-control: your reasoning effort is now high — a failing test run.');
     c.onTestRun(FAIL);
-    expect(c.takeAnnouncement()).toBe('effort-live-control: your reasoning effort is now high — 2nd failing test run in a row.');
+    expect(c.takeAnnouncement()).toBe('effort-live-control: your reasoning effort is now xhigh — 2nd failing test run in a row.');
     expect(c.takeAnnouncement()).toBeUndefined();
   });
 
@@ -486,8 +556,8 @@ describe('announcements', () => {
   it('carries the judge\'s reason', () => {
     const c = make();
     fail2(c);
-    c.onJudgeAnswer(1, 'xhigh - cause unknown', 1, USAGE);
-    expect(c.takeAnnouncement()).toBe('effort-live-control: your reasoning effort is now xhigh — judge: cause unknown.');
+    c.onJudgeAnswer(1, '85 - cause unknown', 1, USAGE);
+    expect(c.takeAnnouncement()).toBe('effort-live-control: your reasoning effort is now high — judge: cause unknown.');
   });
 
   it('R-11: carries the landing line', () => {
@@ -506,14 +576,14 @@ describe('announcements', () => {
   it('says nothing for a change that leaves the level where it was, for a button press, or with announce off', () => {
     const c = make();
     fail2(c);
-    c.onJudgeAnswer(1, 'medium - plain fix', 1, USAGE);
+    c.onJudgeAnswer(1, '10 - plain fix', 1, USAGE);
     expect(c.takeAnnouncement()).toBeUndefined();
     c.onButton('up');
     expect(c.takeAnnouncement()).toBeUndefined();
     const quiet = make({ judge: false, announce: false });
     quiet.onTestRun(FAIL);
     quiet.onTestRun(FAIL);
-    expect(quiet.level).toBe('high');
+    expect(quiet.level).toBe('xhigh');
     expect(quiet.takeAnnouncement()).toBeUndefined();
   });
 });
@@ -523,9 +593,9 @@ describe('end', () => {
     const c = make();
     c.onRequest('claude-opus-5-5', undefined);
     fail2(c);
-    c.onJudgeAnswer(1, 'high - x', 1, USAGE);
+    c.onJudgeAnswer(1, '80 - x', 1, USAGE);
     c.onRequest('claude-opus-5-5', undefined);
     c.onRequest('claude-opus-5-5', undefined);
-    expect(c.end()).toEqual({ event: 'end', requests: { medium: 1, high: 2 }, struggles: 1, judgeCalls: 1, judgeTokens: { input: 10, output: 5 } });
+    expect(c.end()).toEqual({ event: 'end', requests: { medium: 1, high: 2 }, struggles: 1, judgeCalls: 2, judgeTokens: { input: 20, output: 10 } });
   });
 });

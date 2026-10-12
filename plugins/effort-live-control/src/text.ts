@@ -26,6 +26,7 @@ export function announceLine(level: string, why: string): string {
   return `effort-live-control: your reasoning effort is now ${level} — ${why}.`;
 }
 
+export const WHY_FAIL1 = 'a failing test run';
 export const WHY_FAIL2 = '2nd failing test run in a row';
 export const WHY_JUDGE_FAILED = 'judge unavailable, raised one step';
 export const WHY_LANDING = 'landing, one step below your home level';

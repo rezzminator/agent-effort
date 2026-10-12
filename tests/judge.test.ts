@@ -1,43 +1,44 @@
 import { describe, expect, it } from 'vitest';
 import { JUDGE_SYSTEM, packet, parseAnswer, PACKET_MAX, type PacketInput } from '../plugins/effort-live-control/src/judge.ts';
 
-const ALLOWED = ['medium', 'high', 'xhigh'] as const;
-
 describe('parseAnswer', () => {
-  it('R-8: reads the level and the reason after " - "', () => {
-    expect(parseAnswer('xhigh - same test fails after the fix, cause unknown', ALLOWED)).toEqual({ level: 'xhigh', reason: 'same test fails after the fix, cause unknown' });
+  it('R-8: reads the probability and the reason after " - "', () => {
+    expect(parseAnswer('85 - same assertion fails after the fix, cause unknown')).toEqual({ p: 85, reason: 'same assertion fails after the fix, cause unknown' });
   });
 
-  it('R-8: reads the first non-blank line, strips backticks and asterisks, ignores case', () => {
-    expect(parseAnswer('\n\n**High** - because\nextra', ALLOWED)).toEqual({ level: 'high', reason: 'because' });
-    expect(parseAnswer('`medium` - hold', ALLOWED)).toEqual({ level: 'medium', reason: 'hold' });
+  it('R-8: reads the first non-blank line and strips backticks and asterisks', () => {
+    expect(parseAnswer('\n\n**40** - because\nextra')).toEqual({ p: 40, reason: 'because' });
+    expect(parseAnswer('`0` - hold')).toEqual({ p: 0, reason: 'hold' });
+    expect(parseAnswer('100 - certain')).toEqual({ p: 100, reason: 'certain' });
   });
 
-  it('R-9: a level outside the allowed range is not parsed', () => {
-    expect(parseAnswer('max - go all in', ALLOWED)).toBeUndefined();
-    expect(parseAnswer('low - bookkeeping', ALLOWED)).toBeUndefined();
+  it('R-9: a number above 100 is not parsed', () => {
+    expect(parseAnswer('101 - too sure')).toBeUndefined();
+    expect(parseAnswer('1000 - way too sure')).toBeUndefined();
   });
 
-  it('R-9: anything that is not a level first is not parsed', () => {
-    expect(parseAnswer('I would raise it to high', ALLOWED)).toBeUndefined();
-    expect(parseAnswer('', ALLOWED)).toBeUndefined();
-    expect(parseAnswer('   \n  ', ALLOWED)).toBeUndefined();
-    expect(parseAnswer('higher - x', ALLOWED)).toBeUndefined();
+  it('R-9: an answer without a leading number is unparsed', () => {
+    expect(parseAnswer('I would say about 60')).toBeUndefined();
+    expect(parseAnswer('high - stuck')).toBeUndefined();
+    expect(parseAnswer('')).toBeUndefined();
+    expect(parseAnswer('   \n  ')).toBeUndefined();
+    expect(parseAnswer('about 60')).toBeUndefined();
   });
 
-  it('R-8: a level with no reason parses with an empty reason; a long reason is cut to 120 chars', () => {
-    expect(parseAnswer('high', ALLOWED)).toEqual({ level: 'high', reason: '' });
-    expect(parseAnswer(`high - ${'x'.repeat(300)}`, ALLOWED)?.reason).toHaveLength(120);
+  it('R-8: a number with no reason parses with an empty reason; a long reason is cut to 120 chars', () => {
+    expect(parseAnswer('60')).toEqual({ p: 60, reason: '' });
+    expect(parseAnswer(`60 - ${'x'.repeat(300)}`)?.reason).toHaveLength(120);
   });
 });
 
 describe('JUDGE_SYSTEM', () => {
-  it('R-8: is the spec prompt, verbatim at its anchors', () => {
-    expect(JUDGE_SYSTEM.startsWith('You set the reasoning effort of an AI coding agent while it works. The levels, cheapest first: low, medium, high, xhigh, max.')).toBe(true);
-    expect(JUDGE_SYSTEM).toContain('Raise two steps only when several of these hold at once.');
-    expect(JUDGE_SYSTEM).toContain('Lower one step only when what remains is waiting, relaying results or bookkeeping.');
-    expect(JUDGE_SYSTEM.endsWith('Example: xhigh - same test fails after the fix, cause unknown')).toBe(true);
-    expect(JUDGE_SYSTEM.split('\n')).toHaveLength(17);
+  it('R-8: is the v2 prompt, verbatim at its anchors', () => {
+    expect(JUDGE_SYSTEM.startsWith('You estimate whether an AI coding agent is in real trouble, so its reasoning effort can be raised in time.')).toBe(true);
+    expect(JUDGE_SYSTEM).toContain('Estimate the probability, from 0 to 100, that the trouble continues:');
+    expect(JUDGE_SYSTEM).toContain('- a failing test run, the first in a row: about 1 in 2\n- the 2nd failing test run in a row: about 9 in 10\n- a sub-task returned red: about 9 in 10\n- a red result sent back to a sub-task: about 8 in 10\n');
+    expect(JUDGE_SYSTEM).toContain('Waiting for a sub-task is normal for this agent and is no evidence either way.');
+    expect(JUDGE_SYSTEM.endsWith('Example: 85 - same assertion fails after the fix, cause unknown')).toBe(true);
+    expect(JUDGE_SYSTEM.split('\n')).toHaveLength(16);
   });
 });
 
@@ -70,6 +71,13 @@ describe('packet', () => {
         "agent's last words (tail): I will try a different approach",
       ].join('\n'),
     );
+  });
+
+  it('R-5: a fail1 tripwire reads "a failing test run" and carries the failing run\'s output', () => {
+    const text = packet({ ...base, tripwire: 'fail1', events: ['test FAIL: npm test'] });
+    expect(text).toContain('tripwire: a failing test run\n');
+    expect(text).toContain('last output of the failing run (tail): expected 3 got 4');
+    expect(text).not.toContain('return (head)');
   });
 
   it('R-6: a red tripwire carries the return head and no failing-run section', () => {

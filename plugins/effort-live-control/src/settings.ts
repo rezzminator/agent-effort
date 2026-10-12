@@ -9,6 +9,7 @@ export type Settings = {
   ceiling: Effort;
   models: string[];
   judge: boolean;
+  judgeRaiseAt: number;
   judgeModel: string;
   judgeEffort: Effort;
   judgeTimeoutMs: number;
@@ -27,7 +28,8 @@ export const DEFAULTS: Settings = {
   floor: 'medium',
   ceiling: 'xhigh',
   models: ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5'],
-  judge: true,
+  judge: false,
+  judgeRaiseAt: 25,
   judgeModel: 'haiku',
   judgeEffort: 'xhigh',
   judgeTimeoutMs: 45000,
@@ -86,6 +88,11 @@ const parseInt1 = (raw: unknown): Parsed<number> => {
   return Number.isInteger(n) && n >= 1 ? good(n) : bad('not a whole number of at least 1');
 };
 
+const parsePercent = (raw: unknown): Parsed<number> => {
+  const n = toNumber(raw);
+  return Number.isInteger(n) && n >= 0 && n <= 100 ? good(n) : bad('not a whole number from 0 to 100');
+};
+
 const parseText = (raw: unknown): Parsed<string> => (typeof raw === 'string' ? good(raw) : bad('not text'));
 
 const parseModel = (raw: unknown): Parsed<string> =>
@@ -125,6 +132,7 @@ const PARSERS: { [K in keyof Settings]: (raw: unknown) => Parsed<Settings[K] | '
   ceiling: parseLevel,
   models: listOf(modelItem),
   judge: parseBool,
+  judgeRaiseAt: parsePercent,
   judgeModel: parseModel,
   judgeEffort: parseLevel,
   judgeTimeoutMs: parseInt1,

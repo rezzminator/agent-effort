@@ -60,6 +60,13 @@ describe('returnLine', () => {
     expect(returnLine('FAILED unit-a', 'complete', WORDS)).toMatchObject({ token: 'FAILED', unit: 'unit-a' });
   });
 
+  it('R-6: a return line may run on after its unit, as a sub-agent appends a sentence to it', () => {
+    expect(returnLine('DONE probe-unit. Handoff not written: this session has no file-write tool.', 'complete', WORDS)).toMatchObject({ token: 'DONE', red: false, unit: 'probe-unit' });
+    expect(returnLine('PASS probe — 3 checks green', 'complete', WORDS)).toMatchObject({ token: 'PASS', unit: 'probe' });
+    expect(returnLine('FAIL gate-r2, see gate.md', 'complete', WORDS)).toMatchObject({ token: 'FAIL', unit: 'gate-r2' });
+    expect(returnLine('DONE.', 'complete', WORDS)).toMatchObject({ token: 'DONE', unit: undefined });
+  });
+
   it('R-6: is case-sensitive and anchored on the whole line', () => {
     expect(returnLine('done', 'complete', WORDS)).toBeUndefined();
     expect(returnLine('DONE and dusted', 'complete', WORDS)).toBeUndefined();

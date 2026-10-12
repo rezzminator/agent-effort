@@ -11,7 +11,8 @@ describe('resolveSettings', () => {
       floor: 'medium',
       ceiling: 'xhigh',
       models: ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5'],
-      judge: true,
+      judge: false,
+      judgeRaiseAt: 25,
       judgeModel: 'haiku',
       judgeEffort: 'xhigh',
       judgeTimeoutMs: 45000,
@@ -25,18 +26,18 @@ describe('resolveSettings', () => {
     });
     expect(DEFAULTS.testCommandPatterns).toHaveLength(15);
     expect(DEFAULTS.failurePatterns).toHaveLength(6);
-    expect(SETTING_KEYS).toHaveLength(16);
+    expect(SETTING_KEYS).toHaveLength(17);
   });
 
   it('reads valid values of every kind', () => {
-    const raw = { floor: 'low', ceiling: 'max', models: ['claude-x'], judge: false, judgeModel: 'sonnet', judgeEffort: 'high', judgeTimeoutMs: 9000, buttons: false, announce: false, redWords: ['NO'], greenWords: ['YES'], agentDirs: ['/x'], logFile: '', logPackets: true };
+    const raw = { floor: 'low', ceiling: 'max', models: ['claude-x'], judge: true, judgeRaiseAt: 50, judgeModel: 'sonnet', judgeEffort: 'high', judgeTimeoutMs: 9000, buttons: false, announce: false, redWords: ['NO'], greenWords: ['YES'], agentDirs: ['/x'], logFile: '', logPackets: true };
     expect(resolveSettings(raw)).toEqual({ settings: { ...DEFAULTS, ...raw }, errors: [] });
   });
 
   it('reads booleans and numbers given as text', () => {
-    const { settings, errors } = resolveSettings({ judge: 'false', judgeTimeoutMs: '1200' });
+    const { settings, errors } = resolveSettings({ judge: 'true', judgeTimeoutMs: '1200', judgeRaiseAt: '40' });
     expect(errors).toEqual([]);
-    expect(settings).toMatchObject({ judge: false, judgeTimeoutMs: 1200 });
+    expect(settings).toMatchObject({ judge: true, judgeTimeoutMs: 1200, judgeRaiseAt: 40 });
   });
 
   it('reports a bad value by key and value and uses the default', () => {
@@ -44,6 +45,17 @@ describe('resolveSettings', () => {
     expect(settings).toMatchObject({ floor: 'medium', judgeTimeoutMs: 45000, buttons: true, judgeEffort: 'xhigh' });
     expect(errors).toHaveLength(4);
     expect(errors[0]).toBe('effort-live-control: option "floor" is "sideways", not a level (low, medium, high, xhigh, max); using the default "medium"');
+  });
+
+  it('judgeRaiseAt takes a number from 0 to 100 and reports anything else', () => {
+    expect(resolveSettings({ judgeRaiseAt: 0 }).settings.judgeRaiseAt).toBe(0);
+    expect(resolveSettings({ judgeRaiseAt: 100 }).settings.judgeRaiseAt).toBe(100);
+    for (const raw of [101, -1, 12.5, 'high', '']) {
+      const { settings, errors } = resolveSettings({ judgeRaiseAt: raw });
+      expect(settings.judgeRaiseAt, String(raw)).toBe(25);
+      expect(errors, String(raw)).toHaveLength(1);
+      expect(errors[0]).toContain('option "judgeRaiseAt"');
+    }
   });
 
   it('reports a pattern that is not a regular expression', () => {

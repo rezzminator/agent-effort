@@ -263,7 +263,7 @@ const LEAD = agentFile('lead', 'effort: medium\neffortControl:\n  landing: lande
 
 /** An engine with a steered `lead` agent L1 already spawned. */
 async function withLead(files: Record<string, string> = LEAD, options: Record<string, unknown> = {}) {
-  const x = engine(new Map(), { files, options });
+  const x = engine(new Map(), { files, options: { judge: true, ...options } });
   await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
   const run = (command: string, text: string, extra: Record<string, unknown> = {}) => x.tool('L1', 'Bash', { command, ...extra }, { result: {}, text, isError: false });
   const failTwice = async () => {
@@ -430,15 +430,64 @@ suite('steering', () => {
 });
 
 suite('own test runs and the judge', () => {
-  it('R-5: the 2nd failing test run with no pass between starts one detached judge call with the spec request', async () => {
-    const { x, run } = await withLead();
+  it('R-5: the first failing test run raises one step', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false });
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
     await run('npm test', 'FAIL a');
     expect(x.judgeCalls).toHaveLength(0);
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'mechanical', agent: 'L1', tripwire: 'fail1', from: 'medium', to: 'high' }));
+  });
+
+  it('R-5: the second failing run raises again up to the ceiling', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false });
+    await run('npm test', 'FAIL a');
+    await run('npm test', 'FAIL a');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('xhigh');
+    await run('npm test', 'FAIL a');
+    await run('npm test', 'FAIL a');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('xhigh');
+  });
+
+  it('R-5: a pass between failures restarts the count at the first', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false });
+    await run('npm test', 'FAIL a');
+    await run('npm test', '12 passed');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    await run('npm test', 'FAIL a');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+  });
+
+  it('R-5: the judge is off by default: a tripwire starts no call', async () => {
+    const x = engine(new Map(), { files: LEAD });
+    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
+    await x.tool('L1', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    expect(x.judgeCalls).toHaveLength(0);
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+  });
+
+  it('R-5: with the judge on, the first failing test run starts one detached judge call with the spec request, the 2nd another', async () => {
+    const { x, run, answer } = await withLead();
     await run('npm test', 'FAIL a');
     expect(x.judgeCalls).toHaveLength(1);
     expect(x.judgeCalls[0]!.request).toMatchObject({ model: 'haiku', effort: 'xhigh', maxTokens: 4000, timeoutMs: 45000 });
-    expect(x.judgeCalls[0]!.request.system).toContain('You set the reasoning effort of an AI coding agent');
-    expect(x.judgeCalls[0]!.request.prompt).toContain('tripwire: 2nd failing test run in a row');
+    expect(x.judgeCalls[0]!.request.system).toContain('You estimate whether an AI coding agent is in real trouble');
+    expect(x.judgeCalls[0]!.request.prompt).toContain('tripwire: a failing test run\n');
+    await answer('10 - plain');
+    await run('npm test', 'FAIL a');
+    expect(x.judgeCalls).toHaveLength(2);
+    expect(x.judgeCalls[1]!.request.prompt).toContain('tripwire: 2nd failing test run in a row');
+  });
+
+  it('R-8: judgeRaiseAt reaches the controller: p at the line raises, below it holds', async () => {
+    const hold = await withLead(LEAD, { judgeRaiseAt: 60 });
+    await hold.run('npm test', 'FAIL a');
+    await hold.answer('59 - a plain fix');
+    expect(await hold.x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    const raise = await withLead(LEAD, { judgeRaiseAt: 60 });
+    await raise.run('npm test', 'FAIL a');
+    await raise.answer('60 - unsure');
+    expect(await raise.x.step('L1', 'low', undefined, OPUS)).toBe('high');
   });
 
   it('R-5: the judge options (model, effort, timeout) reach the call', async () => {
@@ -448,14 +497,15 @@ suite('own test runs and the judge', () => {
   });
 
   it('R-5: a pass resets the count; a backgrounded run, a non-test command and a deny count nothing', async () => {
-    const { x, run } = await withLead();
+    const { x, run } = await withLead(LEAD, { judge: false });
     await run('npm test', 'FAIL a');
     await run('npm test', '12 passed');
     await run('npm test', 'FAIL a');
     await run('npm test', 'FAIL a', { run_in_background: true });
     await run('cat notes.txt', 'FAIL in the text');
     await x.tool('L1', 'Bash', { command: 'npm test' }, { deny: 'no' });
-    expect(x.judgeCalls).toHaveLength(0);
+    // only the one counted failure since the pass: one step, not two
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
   });
 
   it('R-5: the test and failure patterns are options', async () => {
@@ -478,8 +528,8 @@ suite('own test runs and the judge', () => {
     const { x, failTwice, answer } = await withLead();
     await failTwice();
     expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
-    await answer('xhigh - same test fails after the fix, cause unknown');
-    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('xhigh');
+    await answer('85 - same test fails after the fix, cause unknown');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
   });
 
   it('R-8: the tool call returns without waiting for the judge', async () => {
@@ -503,7 +553,7 @@ suite('own test runs and the judge', () => {
     const { x, failTwice } = await withLead(LEAD, { judge: false });
     await failTwice();
     expect(x.judgeCalls).toHaveLength(0);
-    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('xhigh');
   });
 
   it('R-8: effortControl.judge in the frontmatter overrides the option', async () => {
@@ -511,15 +561,23 @@ suite('own test runs and the judge', () => {
     const { x, failTwice } = await withLead(files);
     await failTwice();
     expect(x.judgeCalls).toHaveLength(0);
-    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('xhigh');
   });
 
-  it('R-8: the judge row carries the tripwire, the levels, the reason, the time and the usage', async () => {
+  it('R-8: effortControl.judge: on in the frontmatter turns the judge on for that agent while the option is off', async () => {
+    const files = agentFile('lead', 'effort: medium\neffortControl:\n  judge: on');
+    const x = engine(new Map(), { files });
+    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
+    await x.tool('L1', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    expect(x.judgeCalls).toHaveLength(1);
+  });
+
+  it('R-8: the judge row carries the tripwire, p, the levels, the reason, the time and the usage', async () => {
     const { x, failTwice, answer } = await withLead();
     await failTwice();
-    await answer('high - cause unknown');
+    await answer('70 - cause unknown');
     const judge = (await x.rows()).find((row) => row.event === 'judge')!;
-    expect(judge).toMatchObject({ agent: 'L1', type: 'lead', tripwire: 'fail2', from: 'medium', to: 'high', reason: 'cause unknown', usage: USAGE });
+    expect(judge).toMatchObject({ agent: 'L1', type: 'lead', tripwire: 'fail1', p: 70, from: 'medium', to: 'high', reason: 'cause unknown', usage: USAGE });
     expect(typeof judge.ms).toBe('number');
   });
 
@@ -532,10 +590,10 @@ suite('own test runs and the judge', () => {
     expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'judge-failed', reason: 'aborted', from: 'medium', to: 'high' }));
   });
 
-  it('R-9: an answer that does not parse raises one step the same way', async () => {
+  it('R-9: an answer without a leading number is unparsed and raises one step', async () => {
     const { x, failTwice, answer } = await withLead();
     await failTwice();
-    await answer('Probably high, I would say.');
+    await answer('Probably 60, I would say.');
     expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
     expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'judge-failed', reason: 'unparseable answer' }));
   });
@@ -552,11 +610,11 @@ suite('own test runs and the judge', () => {
   it('R-10: a passing run after the trouble restores the pre-struggle level and logs resolved', async () => {
     const { x, run, failTwice, answer } = await withLead();
     await failTwice();
-    await answer('xhigh - stuck');
-    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('xhigh');
+    await answer('90 - stuck');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
     await run('npm test', '12 passed');
     expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
-    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'resolved', from: 'xhigh', to: 'medium', requests: 1 }));
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'resolved', from: 'high', to: 'medium', requests: 1 }));
   });
 });
 
@@ -616,7 +674,7 @@ suite('children', () => {
     const { x } = await withLead();
     await child(x, 'C1', 'builder', { name: 'b1' });
     await x.complete('C1', 'FAIL builder');
-    x.judgeCalls[0]!.resolve({ isAnswered: true, text: 'medium - plain', usage: USAGE });
+    x.judgeCalls[0]!.resolve({ isAnswered: true, text: '10 - plain', usage: USAGE });
     await x.tick();
     await x.tool('L1', 'SendMessage', { to: 'b1', message: 'fix it' });
     expect(x.judgeCalls).toHaveLength(2);
@@ -627,7 +685,7 @@ suite('children', () => {
     const { x } = await withLead();
     await child(x);
     await x.complete('C1', 'FAIL builder');
-    x.judgeCalls[0]!.resolve({ isAnswered: true, text: 'medium - plain', usage: USAGE });
+    x.judgeCalls[0]!.resolve({ isAnswered: true, text: '10 - plain', usage: USAGE });
     await x.tick();
     await x.spawned('Build part again.', 'C2', { subagentType: 'builder', parentAgentId: 'L1' });
     expect(x.judgeCalls).toHaveLength(2);
@@ -711,7 +769,7 @@ suite('announcing a change', () => {
   it('the next tool result of the agent carries one line in context, appended to existing context, then it is cleared', async () => {
     const { x, failTwice, answer } = await withLead();
     await failTwice();
-    await answer('high - same failure after the fix');
+    await answer('80 - same failure after the fix');
     const first = await x.tool('L1', 'Bash', { command: 'ls' }, { result: {}, text: 'a b', context: ['earlier'] });
     expect(first.out.context).toEqual(['earlier', 'effort-live-control: your reasoning effort is now high — judge: same failure after the fix.']);
     const second = await x.tool('L1', 'Bash', { command: 'ls' }, { result: {}, text: 'a b' });
@@ -720,9 +778,10 @@ suite('announcing a change', () => {
 
   it('a mechanical raise is told in the same tool result that caused it', async () => {
     const { x, run } = await withLead(LEAD, { judge: false });
-    await run('npm test', 'FAIL a');
+    const first = await run('npm test', 'FAIL a');
+    expect(first.out.context).toEqual(['effort-live-control: your reasoning effort is now high — a failing test run.']);
     const second = await run('npm test', 'FAIL a');
-    expect(second.out.context).toEqual(['effort-live-control: your reasoning effort is now high — 2nd failing test run in a row.']);
+    expect(second.out.context).toEqual(['effort-live-control: your reasoning effort is now xhigh — 2nd failing test run in a row.']);
   });
 
   it('a deny carries nothing and the line waits for the next result', async () => {
@@ -777,11 +836,11 @@ suite('the decision log', () => {
     for (const logPackets of [false, true]) {
       const { x, failTwice, answer } = await withLead(LEAD, { logPackets });
       await failTwice();
-      await answer('high - cause unknown');
+      await answer('70 - cause unknown');
       const judge = (await x.rows()).find((row) => row.event === 'judge')!;
       if (logPackets) {
-        expect(judge.packet).toContain('tripwire: 2nd failing test run in a row');
-        expect(judge.answer).toBe('high - cause unknown');
+        expect(judge.packet).toContain('tripwire: a failing test run');
+        expect(judge.answer).toBe('70 - cause unknown');
       } else {
         expect(judge).not.toHaveProperty('packet');
         expect(judge).not.toHaveProperty('answer');

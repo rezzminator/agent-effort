@@ -51,8 +51,16 @@
     "judge": {
       "type": "boolean",
       "title": "judge: ask the judge at a tripwire",
-      "description": "On: a tripwire (a second failing test run in a row, a sub-task that returned red, a red result sent back) makes one cheap model call that names the effort for the next replies. Off: a tripwire raises the effort one step. An agent's effortControl.judge overrides it.",
-      "default": true
+      "description": "Off (default): every tripwire (a failing test run, a sub-task that returned red, a red result sent back) raises the effort one step. On: a tripwire makes one cheap model call that estimates the probability that the trouble continues; the effort rises one step only when it is at least judgeRaiseAt. An agent's effortControl.judge overrides it.",
+      "default": false
+    },
+    "judgeRaiseAt": {
+      "type": "number",
+      "title": "judgeRaiseAt: the probability that raises the effort",
+      "description": "With the judge on: a probability (0 to 100) at or above this raises the effort one step; below it the effort holds. The judge never lowers it.",
+      "default": 25,
+      "min": 0,
+      "max": 100
     },
     "judgeModel": {
       "type": "string",

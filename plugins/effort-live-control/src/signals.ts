@@ -28,7 +28,9 @@ const escape = (word: string): string => word.replace(/[.*+?^${}()|[\]\\]/g, '\\
 
 function lineRegex(words: readonly string[]): RegExp {
   const tokens = [...words].sort((a, b) => b.length - a.length).map(escape);
-  return new RegExp(`^(${tokens.join('|')})(?:\\s+([A-Za-z0-9._/@-]+))?(?::.*)?\\s*$`);
+  // TOKEN, then an optional unit, then the line's end, punctuation or a dash: what follows
+  // may be a sentence (`DONE probe-unit. Handoff written.`), but `DONE and dusted` is prose.
+  return new RegExp(`^(${tokens.join('|')})(?:\\s+([A-Za-z0-9_/@-](?:[A-Za-z0-9._/@-]*[A-Za-z0-9_/@-])?))?(?=\\s*$|[.:,;]|\\s+[—–-](?:\\s|$))`);
 }
 
 const LEADING_LINES = 15;
@@ -38,7 +40,8 @@ const LINE_NUMBER = /^\s*\d+[\t→]/;
  * The return line of a text, if it has one. A child's final answer (`complete`) is
  * searched in its first 15 lines; a result the steered agent read (`read`) counts only
  * by its first non-blank line, after a leading line-number prefix. A line is
- * `TOKEN`, `TOKEN unit` or `TOKEN unit: detail`, case-sensitive.
+ * `TOKEN` or `TOKEN unit`, case-sensitive, ending the line or followed by `.`, `:`,
+ * `,`, `;` or a dash and whatever text comes after.
  */
 export function returnLine(text: string, channel: Channel, words: ReturnWords): ReturnLine | undefined {
   const all = [...words.red, ...words.green];

@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-0.1.3-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-245%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-260%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -103,22 +103,22 @@ A steered agent starts at its **home** level: its definition's `effort:`, else i
 
 | Moment | What happens |
 | --- | --- |
-| The agent's own test run fails twice in a row (and at the 4th, 6th, …) | A **tripwire**: the level is judged. A test run is a foreground Bash command matching `testCommandPatterns`; it fails when its result is an error or matches `failurePatterns`. |
+| The agent's own test run fails (the 1st failing run, the 2nd in a row, then every even count: 4th, 6th, …) | A **tripwire**: the level rises one step, or is judged when the judge is on. A test run is a foreground Bash command matching `testCommandPatterns`; it fails when its result is an error or matches `failurePatterns`. |
 | A sub-agent returns a red line (`FAIL`, `FAILED`, `BLOCKED`, `PARTIAL`, `SPEC-DRIFT` first on its answer's line, or in a file the agent reads) | A tripwire, and that unit is marked red. |
 | The agent sends a message to a red child, or spawns a type that has a red child | A tripwire (the red result is being sent back). |
-| A tripwire | A struggle opens at the level the agent had outside trouble. The judge is asked, detached: no request waits for it; requests go at the old level until it answers. A call already in flight makes this tripwire a no-op (`judge-busy`). With the judge off, the level rises one step. |
-| The judge answers | The level becomes its answer, within the range. A late answer for a closed struggle is dropped (`judge-stale`). |
-| The judge times out, fails or answers off-format | The level rises one step (`judge-failed`). |
+| A tripwire | A struggle opens at the level the agent had outside trouble. With the judge off (the default), the level rises one step, up to the ceiling (`mechanical`). With it on, the judge is asked, detached: no request waits for it; requests go at the old level until it answers. A call already in flight makes this tripwire a no-op (`judge-busy`). |
+| The judge answers | A probability at or above `judgeRaiseAt` raises the level one step, within the range; below it the level holds. The judge never lowers. A late answer for a closed struggle is dropped (`judge-stale`). |
+| The judge times out, fails or answers off-format (no leading number from 0 to 100) | The level rises one step (`judge-failed`). |
 | A test run passes and no unit is red, or a green return (`DONE`, `PASS`, `FIXED`) clears the last red unit | The struggle is **resolved**: the level returns to what it was before. |
 | The agent spawns a `landing` type | Its resting level becomes one step below home, floored. |
 | The agent presses `effort_up` or `effort_down` | One step, within the range; outside a struggle it also moves the resting level. |
 | The agent finishes | An `end` row summarises its requests by level, struggles and judge calls. |
 
-**The judge** is one `haiku` call per tripwire (`judgeModel`, `judgeEffort`, `judgeTimeoutMs`), 4000 tokens at most. It reads a snapshot of at most 2,500 characters: the agent's type, model, level and range, the tripwire, the opening 600 characters of its brief, its last 12 events (`test FAIL: …`, `return builder FAIL: …`, `sendmessage → …`, `spawn …`), the tail of the failing output or the head of the red return, and the tail of the agent's last words. It answers one line, `level - reason`. Nothing else leaves the machine for the judge, and the snapshot is logged only with `logPackets`.
+**The judge** is off by default: with `judge: false`, every tripwire raises the effort one step. That is the measured better default. On 258 recorded tripwires from 147 orchestrator runs, a Haiku judge could not tell trouble that continues from trouble that ends (AUC 0.35 to 0.56 within each tripwire kind), and raising one step at every tripwire beat every judge variant on the replay loss (3 for a missed needed raise, 1 for an unneeded one): 0.283 against 0.517 for the best judge. Turn it on with the `judge` option, or per agent with `effortControl.judge: on`. When on, it is one `haiku` call per tripwire (`judgeModel`, `judgeEffort`, `judgeTimeoutMs`), 4000 tokens at most, and it estimates the probability that the trouble continues, starting from the rate measured for that tripwire kind: at or above `judgeRaiseAt` the effort rises one step, below it holds, and the judge never lowers it. It reads a snapshot of at most 2,500 characters: the agent's type, model, level and range, the tripwire, the opening 600 characters of its brief, its last 12 events (`test FAIL: …`, `return builder FAIL: …`, `sendmessage → …`, `spawn …`), the tail of the failing output or the head of the red return, and the tail of the agent's last words. It answers one line, `probability - reason`. Nothing else leaves the machine for the judge, and the snapshot is logged only with `logPackets`.
 
 **The buttons** are two tools every agent sees, `effort_up` and `effort_down`, with no parameters. A steered agent moves its own level one step (or hears that it is already at the bound of its range). Any other caller, the main chat included, is refused. `buttons: false` registers neither.
 
-**Announcements** (`announce`): after any change of a steered agent's level, the agent's next tool result carries one line, `effort-live-control: your reasoning effort is now high — 2nd failing test run in a row.`, so the agent knows. A newer change replaces an undelivered one; a button press is answered by its own result instead.
+**Announcements** (`announce`): after any change of a steered agent's level, the agent's next tool result carries one line, `effort-live-control: your reasoning effort is now high — a failing test run.`, so the agent knows. A newer change replaces an undelivered one; a button press is answered by its own result instead.
 
 ## ⚙️ Options
 
@@ -129,7 +129,8 @@ Set under the plugin's settings. A bad value is reported once at the first hook 
 | `floor` | `medium` | Lowest effort a steered agent is sent. `effortControl.floor` overrides it. |
 | `ceiling` | `xhigh` | Highest effort a steered agent is sent. `effortControl.ceiling` overrides it. |
 | `models` | `claude-opus-5-5`<br>`claude-fable-5-1`<br>`claude-sonnet-5-5` | Model id prefixes that are steered; `claude-opus-5-5` also matches `claude-opus-5-5[1m]`. Any other model passes untouched. |
-| `judge` | `true` | Ask the judge at a tripwire; off raises one step mechanically. `effortControl.judge` overrides it. |
+| `judge` | `false` | Ask the judge at a tripwire; off raises one step mechanically. `effortControl.judge` overrides it. |
+| `judgeRaiseAt` | `25` | With the judge on: a probability (0 to 100) at or above this raises the effort one step; below it the effort holds. |
 | `judgeModel` | `haiku` | The judge call's model. |
 | `judgeEffort` | `xhigh` | The judge call's own effort. |
 | `judgeTimeoutMs` | `45000` | Milliseconds before an unanswered judge call is dropped and the effort rises one step. |
@@ -145,15 +146,15 @@ Set under the plugin's settings. A bad value is reported once at the first hook 
 
 ## 📜 Decision log
 
-`logFile` holds one JSONL file per session, the newest 5,000 rows. Every row has `ts`, `event`, `agent` (an id, or `main`) and `type`. Rows: `step` for every steered request (`model`, `requested`, `sent`, `struggle`), `tag-ignored`, `judge` (`tripwire`, `from`, `to`, `reason`, `ms`, `usage`), `judge-failed`, `judge-stale`, `judge-busy`, `mechanical`, `resolved`, `landing`, `button`, `button-refused`, `model-gated`, `not-steered`, `end`, and option, tool-registration and resolution errors. No prompt, brief or tool-result text is written, except the judge's `packet` and `answer` when `logPackets` is on.
+`logFile` holds one JSONL file per session, the newest 5,000 rows. Every row has `ts`, `event`, `agent` (an id, or `main`) and `type`. Rows: `step` for every steered request (`model`, `requested`, `sent`, `struggle`), `tag-ignored`, `judge` (`tripwire`, `p`, `from`, `to`, `reason`, `ms`, `usage`), `judge-failed`, `judge-stale`, `judge-busy`, `mechanical`, `resolved`, `landing`, `button`, `button-refused`, `model-gated`, `not-steered`, `end`, and option, tool-registration and resolution errors. No prompt, brief or tool-result text is written, except the judge's `packet` and `answer` when `logPackets` is on.
 
 ## ❓ FAQ
 
-**Does it cost anything?** One host-state read per sub-agent request. A sub-agent's first request waits only while its own spawn is still returning; a loop no spawn names (the engine's compaction or memory forks) waits at most once, and never when no spawn is in flight. Live control adds one Haiku call per tripwire, never awaited.
+**Does it cost anything?** One host-state read per sub-agent request. A sub-agent's first request waits only while its own spawn is still returning; a loop no spawn names (the engine's compaction or memory forks) waits at most once, and never when no spawn is in flight. Live control adds nothing by default; with the judge on, one Haiku call per tripwire, never awaited.
 
 **Does it survive compaction?** The pin does: it is kept per sub-agent id, not read from the transcript. A steered agent's state is in the plugin's memory and lasts until the agent finishes or the plugin reloads.
 
-**Does changing effort break the prompt cache?** A level change is a change in the request's effort, which Claude Code may price as a cache miss for that agent's next request. The judge exists so that a raise happens at a tripwire, not at random.
+**Does changing effort break the prompt cache?** A level change is a change in the request's effort, which Claude Code may price as a cache miss for that agent's next request. A raise happens at a tripwire, not at random.
 
 **Can the main chat set its own effort this way?** No; use `/effort`.
 
