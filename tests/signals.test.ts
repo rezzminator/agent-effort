@@ -78,9 +78,24 @@ describe('returnLine', () => {
 
   it('R-6: is case-sensitive and anchored on the whole line', () => {
     expect(returnLine('done', 'complete', WORDS)).toBeUndefined();
-    expect(returnLine('DONE and dusted', 'complete', WORDS)).toBeUndefined();
     expect(returnLine('FAILURE', 'complete', WORDS)).toBeUndefined();
     expect(returnLine('The build FAILED', 'complete', WORDS)).toBeUndefined();
+  });
+
+  it('return lines: a final answer counts whatever follows its token', () => {
+    expect(returnLine('DONE probe-unit (handoff skipped: no write tool)', 'complete', WORDS)).toMatchObject({ token: 'DONE', red: false, unit: 'probe-unit' });
+    expect(returnLine('DONE (no handoff)', 'complete', WORDS)).toMatchObject({ token: 'DONE', unit: undefined });
+    expect(returnLine('PASS probe', 'complete', WORDS)).toMatchObject({ token: 'PASS', unit: 'probe' });
+    expect(returnLine('FAILED — two residuals', 'complete', WORDS)).toMatchObject({ token: 'FAILED', red: true, unit: undefined });
+    expect(returnLine('DONE and dusted', 'complete', WORDS)).toMatchObject({ token: 'DONE', red: false, unit: undefined });
+    expect(returnLine('DONEZO', 'complete', WORDS)).toBeUndefined();
+    expect(returnLine('done probe', 'complete', WORDS)).toBeUndefined();
+  });
+
+  it('return lines: a read result needs a boundary after its token or unit', () => {
+    expect(returnLine('DONE probe-unit (x)', 'read', WORDS)).toMatchObject({ token: 'DONE', unit: 'probe-unit' });
+    expect(returnLine('DONE and dusted', 'read', WORDS)).toBeUndefined();
+    expect(returnLine('FAIL probe: 1 residual', 'read', WORDS)).toMatchObject({ token: 'FAIL', unit: 'probe' });
   });
 
   it('R-6: a turn.complete answer is searched in its first 15 lines', () => {

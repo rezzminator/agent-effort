@@ -15,6 +15,7 @@ Every release of effort-live-control (named agent-effort through 0.1.3). Version
 - Eighteen plugin options (`floor`, `ceiling`, `models`, `judge`, `judgeRaiseAt`, `tripwires`, `judgeModel`, `judgeEffort`, `judgeTimeoutMs`, `buttons`, `announce`, `testCommandPatterns`, `failurePatterns`, `redWords`, `greenWords`, `agentDirs`, `logFile`, `logPackets`) and a per-session JSONL decision log, with no prompt or tool-result text unless `logPackets` is on.
 
 ### Fixed
+- A sub-agent's final answer such as `DONE probe-unit (handoff skipped: no write tool)` is a return line again (the token alone counts; the unit is read when a boundary follows it), and a green return naming no open red closes the only open red of its own agent type, so a struggle no longer stays open through the landing at a raised effort.
 - A tripwire that arrives while a judge call for an already closed struggle is still in flight raises one step mechanically (`mechanical` row with `busy: true`) instead of being swallowed as `judge-busy`; the stale answer is still dropped.
 
 ### Changed

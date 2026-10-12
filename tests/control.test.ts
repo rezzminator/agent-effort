@@ -194,6 +194,30 @@ describe('child returns', () => {
     expect(judges(out)[0]!.packet).toContain('- return builder FAIL: FAIL b1');
   });
 
+  it("return: a green return of the same type closes that type's only open red", () => {
+    const c = make({ judge: false });
+    spawned(c, 'c1', 'builder');
+    c.onChildReturn('c1', 'FAIL unit-a: x');
+    expect(c.struggleOpen).toBe(true);
+    spawned(c, 'c2', 'builder');
+    const out = c.onChildReturn('c2', 'DONE (no handoff)');
+    expect(c.reds.size).toBe(0);
+    expect(c.struggleOpen).toBe(false);
+    expect(rows(out, 'resolved')).toHaveLength(1);
+  });
+
+  it('return: with two open reds of one type an unnamed green closes neither', () => {
+    const c = make({ judge: false });
+    spawned(c, 'c1', 'builder');
+    c.onChildReturn('c1', 'FAIL unit-a: x');
+    spawned(c, 'c2', 'builder');
+    c.onChildReturn('c2', 'FAIL unit-b: y');
+    spawned(c, 'c3', 'builder');
+    c.onChildReturn('c3', 'DONE (no handoff)');
+    expect([...c.reds].sort()).toEqual(['unit-a', 'unit-b']);
+    expect(c.struggleOpen).toBe(true);
+  });
+
   it('R-6: text that is not a return line changes nothing', () => {
     const c = make();
     spawned(c);

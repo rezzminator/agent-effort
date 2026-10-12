@@ -718,6 +718,16 @@ suite('children', () => {
     expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
   });
 
+  it('return: a final answer with a parenthesis after its unit resolves the struggle', async () => {
+    const { x } = await withLead(LEAD, { judge: false });
+    await child(x);
+    await x.complete('C1', 'FAIL probe-unit: boom');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    await x.tool('L1', 'SendMessage', { to: 'C1', message: 'fix it' });
+    await x.complete('C1', 'DONE probe-unit (handoff skipped: I have no file-write tool, only Read)');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+  });
+
   it('R-7: a SendMessage to a red child fires the redispatch tripwire', async () => {
     const { x } = await withLead();
     await child(x, 'C1', 'builder', { name: 'b1' });

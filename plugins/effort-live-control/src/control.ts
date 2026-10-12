@@ -240,6 +240,15 @@ export class Controller {
       this.heads.set(unit, collapse(text).slice(0, HEAD_MAX));
       this.tripwire('red', whyChild(childType, found.token), actions, this.heads.get(unit));
     } else {
+      // A green return that names no open red closes the only one its own agent type holds.
+      if (!this.reds.has(unit) && child) {
+        const open = new Set([...this.children.values()].filter((other) => other.type === child.type && this.isRed(other)).map((other) => other.unit as string));
+        if (open.size === 1) {
+          const [only] = open;
+          this.reds.delete(only as string);
+          this.heads.delete(only as string);
+        }
+      }
       this.reds.delete(unit);
       this.resolve(actions);
     }
