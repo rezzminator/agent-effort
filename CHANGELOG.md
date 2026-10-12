@@ -4,6 +4,17 @@ Every release of effort-live-control (named agent-effort through 0.1.3). Version
 
 ## [Unreleased]
 
+### Added
+- Live effort control. An agent definition with `effortControl` (bare `on`, or nested `floor`, `ceiling`, `landing`, `judge`, `enabled`) is steered: its requests go at a level that rises at a tripwire (its own test run failing twice in a row, a sub-agent returning `FAIL`, `FAILED`, `BLOCKED`, `PARTIAL` or `SPEC-DRIFT`, a red result sent back to a sub-task) and returns to the level it had once a test run passes and no unit is red. One Haiku call per tripwire (never awaited, so no request waits) names the level; a call that times out, fails or answers off-format raises one step instead.
+- The `effort_up` and `effort_down` tools: a steered agent moves its own effort one step within its range; any other caller is refused.
+- The agent is told of each change in its next tool result (`announce`).
+- A landing step: spawning a type listed in `effortControl.landing` lowers the agent one step below its home level.
+- Sixteen plugin options (`floor`, `ceiling`, `models`, `judge`, `judgeModel`, `judgeEffort`, `judgeTimeoutMs`, `buttons`, `announce`, `testCommandPatterns`, `failurePatterns`, `redWords`, `greenWords`, `agentDirs`, `logFile`, `logPackets`) and a per-session JSONL decision log, with no prompt or tool-result text unless `logPackets` is on.
+
+### Changed
+- A sub-agent whose definition sets `effort:` to a level keeps it: a valid `[effort: …]` tag is still stripped from the prompt but ignored, and a `tag-ignored` row says so. A malformed tag still refuses the spawn. The Agent tool's description says so.
+- Renamed from agent-effort to effort-live-control. Migration: uninstall `agent-effort@agent-effort`, install `effort-live-control@effort-live-control` (`/plugin marketplace add rezzminator/effort-live-control`). The host-state key changed from `agent-effort` to `effort-live-control`, so the pins of a running session are dropped: its sub-agents run unpinned until their next spawn or first request.
+
 ## [0.1.3] — 2026-10-12
 
 ### Fixed

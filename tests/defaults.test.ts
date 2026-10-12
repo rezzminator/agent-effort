@@ -1,0 +1,49 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+import { DEFAULTS, SETTING_KEYS } from '../plugins/effort-live-control/src/settings.ts';
+
+// Every knob is a plugin option. Defaults agree in three places: src/settings.ts, plugin.json's userConfig and the README table.
+const root = new URL('../', import.meta.url);
+const manifest = JSON.parse(readFileSync(new URL('plugins/effort-live-control/.claude-plugin/plugin.json', root), 'utf8'));
+const readmes = ['README.md', 'plugins/effort-live-control/README.md'].map((path) => [path, readFileSync(new URL(path, root), 'utf8')] as const);
+
+describe('plugin options', () => {
+  it('declares exactly the settings, each with its default, a title opening with its key, and a matching type', () => {
+    expect(Object.keys(manifest.userConfig).sort()).toEqual([...SETTING_KEYS].sort());
+    for (const key of SETTING_KEYS) {
+      const field = manifest.userConfig[key];
+      expect(field.default, key).toEqual(DEFAULTS[key]);
+      expect(field.title.startsWith(`${key}: `), key).toBe(true);
+      expect(typeof field.description, key).toBe('string');
+      expect(field.type, key).toBe(typeof DEFAULTS[key] === 'object' ? 'string' : typeof DEFAULTS[key]);
+      expect(Boolean(field.multiple), key).toBe(Array.isArray(DEFAULTS[key]));
+    }
+  });
+
+  it.each(readmes)('shows every option in the table of %s with the default the code holds', (_path, readme) => {
+    const lines = readme.split('\n');
+    for (const key of SETTING_KEYS) {
+      const row = lines.find((line) => line.startsWith(`| \`${key}\` |`));
+      expect(row, key).toBeDefined();
+      // A GFM cell ends at every `|` not escaped as `\|`, inside code spans too.
+      const cells = row!.split(/(?<!\\)\|/).slice(1, -1).map((cell) => cell.trim());
+      expect(cells, key).toHaveLength(3);
+      const value = DEFAULTS[key];
+      if (Array.isArray(value) && value.length === 0) {
+        expect(cells[1], key).toBe('*(none)*');
+        continue;
+      }
+      if (value === '') {
+        expect(cells[1], key).toBe('*(empty)*');
+        continue;
+      }
+      const shown = cells[1]!.split('<br>').map((entry) => entry.replace(/^`|`$/g, '').replace(/\\\|/g, '|'));
+      expect(shown, key).toEqual(Array.isArray(value) ? value : [String(value)]);
+    }
+  });
+
+  it('keeps the two READMEs\' option tables identical', () => {
+    const table = (text: string) => text.split('\n').filter((line) => SETTING_KEYS.some((key) => line.startsWith(`| \`${key}\` |`)));
+    expect(table(readmes[1]![1])).toEqual(table(readmes[0]![1]));
+  });
+});

@@ -44,7 +44,7 @@ export function denyText(raw: string): string {
   return `The prompt's effort tag names "${raw}", which is not an effort level. Start the prompt with [effort: ${LEVELS.join('|')}], or leave the tag out to keep the agent's own effort.`;
 }
 
-export const DESCRIBE_LINE = `\n\nEffort: start the prompt with [effort: ${LEVELS.join('|')}] to run the sub-agent at that effort; without it, the sub-agent keeps the effort it starts with.`;
+export const DESCRIBE_LINE = `\n\nEffort: start the prompt with [effort: ${LEVELS.join('|')}] to run the sub-agent at that effort; without it, the sub-agent keeps the effort it starts with. An agent whose definition sets its own effort keeps it, and the tag is ignored.`;
 
 /** Appends the tag's usage to a description once, whatever calls it twice. */
 export function describe(description: string): string {
