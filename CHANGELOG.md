@@ -2,7 +2,7 @@
 
 Every release of effort-live-control (named agent-effort through 0.1.3). Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `effort-live-control--v<version>` (`agent-effort--v<version>` through 0.1.3), with a GitHub release carrying the section below.
 
-## [Unreleased]
+## [0.2.0] — 2026-10-12
 
 ### Added
 - The `struggleDecay` option (a whole number from 0, default 20) and the per-agent `effortControl.struggleDecay`: a steered agent's raised level comes home once it has made that many requests without a new tripwire, clearing the red sub-agent returns still open and the failure streak, and a later tripwire opens a new struggle; `0` turns it off, and the main chat decays too. The `resolved` log row gains `why` (`decay`, or `resolved` for an ordinary resolution). Why, measured over 147 orchestrator runs (313 replayed struggles): 49% of all raised requests came after a struggle's last tripwire, and 15% of struggles never resolved, 31 of those 47 held open only by a red sub-agent return no green ever cleared; a decay of 20 cuts 14 of 313 struggles early (the next tripwire re-opens them) and none of the landers' struggles over 131 lander runs.
