@@ -78,6 +78,18 @@ describe('plugin options', () => {
     }
   });
 
+  it('readerCommands: agrees across the code, the manifest and both READMEs', () => {
+    expect(DEFAULTS.readerCommands).toContain('grep');
+    expect(DEFAULTS.readerCommands).not.toContain('source');
+    expect(manifest.userConfig.readerCommands).toMatchObject({ type: 'string', multiple: true, default: DEFAULTS.readerCommands });
+    expect(manifest.userConfig.readerCommands.title.startsWith('readerCommands: ')).toBe(true);
+    for (const [path, readme] of readmes) {
+      const row = readme.split('\n').find((line) => line.startsWith('| `readerCommands` |'));
+      expect(row, path).toBeDefined();
+      for (const name of DEFAULTS.readerCommands) expect(row, `${path} ${name}`).toContain(`\`${name}\``);
+    }
+  });
+
   it('keeps the two READMEs\' option tables identical', () => {
     const table = (text: string) => text.split('\n').filter((line) => SETTING_KEYS.some((key) => line.startsWith(`| \`${key}\` |`)));
     expect(table(readmes[1]![1])).toEqual(table(readmes[0]![1]));

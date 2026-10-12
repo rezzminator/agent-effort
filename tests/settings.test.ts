@@ -29,7 +29,7 @@ describe('resolveSettings', () => {
     });
     expect(DEFAULTS.testCommandPatterns).toHaveLength(17);
     expect(DEFAULTS.failurePatterns).toHaveLength(6);
-    expect(SETTING_KEYS).toHaveLength(19);
+    expect(SETTING_KEYS).toHaveLength(20);
   });
 
   it('reads valid values of every kind', () => {
@@ -134,11 +134,34 @@ describe('parentTag option', () => {
   });
 });
 
+describe('readerCommands', () => {
+  it('readerCommands: the default names the programs that only read or print, and not the ones that execute', () => {
+    expect(DEFAULTS.readerCommands).toEqual(expect.arrayContaining(['cat', 'grep', 'echo', 'git', 'sed', '[', '[[', 'cd', 'sleep', 'kill']));
+    expect(DEFAULTS.readerCommands).not.toContain('source');
+    expect(DEFAULTS.readerCommands).not.toContain('.');
+    expect(DEFAULTS.readerCommands).toHaveLength(new Set(DEFAULTS.readerCommands).size);
+  });
+
+  it('readerCommands: a custom list replaces the default', () => {
+    expect(resolveSettings({ readerCommands: ['grep', 'cat'] })).toEqual({ settings: { ...DEFAULTS, readerCommands: ['grep', 'cat'] }, errors: [] });
+    expect(resolveSettings({ readerCommands: 'grep\ncat' }).settings.readerCommands).toEqual(['grep', 'cat']);
+  });
+
+  it.each([['two words', ['cat', 'two words']], ['', ['cat', '']], ['tab\there', ['tab\there']]])('readerCommands: a bad item is reported and the default applies (%j)', (_label, raw) => {
+    const { settings, errors } = resolveSettings({ readerCommands: raw });
+    expect(settings.readerCommands).toEqual(DEFAULTS.readerCommands);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('option "readerCommands"');
+    expect(errors[0]).toContain(JSON.stringify(raw));
+  });
+});
+
 describe('compile', () => {
   it('turns the patterns into regular expressions', () => {
     const compiled = compile(DEFAULTS);
     expect(compiled.testCommand).toHaveLength(17);
     expect(compiled.failure).toHaveLength(6);
     expect(compiled.testCommand.every((re) => re instanceof RegExp)).toBe(true);
+    expect(compiled.readers).toEqual(new Set(DEFAULTS.readerCommands));
   });
 });

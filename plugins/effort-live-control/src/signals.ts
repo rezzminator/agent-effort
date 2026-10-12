@@ -1,3 +1,5 @@
+import { runSegments } from './shell.ts';
+
 // What a steered agent's tool results and its sub-agents' answers say about trouble.
 
 /** The words that open a return line: red ones mean trouble, green ones mean it is over. */
@@ -8,15 +10,16 @@ export type ReturnLine = { token: string; red: boolean; unit: string | undefined
 /** Where a return was read: a child's own final answer, or a result the steered agent read (Read, a cat). */
 export type Channel = 'complete' | 'read';
 
-export function isTestCommand(command: string, patterns: readonly RegExp[]): boolean {
-  return patterns.some((pattern) => pattern.test(command));
+/** Whether a command runs a test: a test pattern matches one of the commands it runs, never a heredoc body or a reader program's arguments. */
+export function isTestCommand(command: string, patterns: readonly RegExp[], readers: ReadonlySet<string>): boolean {
+  return runSegments(command, readers).some((segment) => patterns.some((pattern) => pattern.test(segment)));
 }
 
 /** The command of a foreground Bash call that is a test run; undefined for anything else. */
-export function isTestRun(tool: string, input: Readonly<Record<string, unknown>>, patterns: readonly RegExp[]): string | undefined {
+export function isTestRun(tool: string, input: Readonly<Record<string, unknown>>, patterns: readonly RegExp[], readers: ReadonlySet<string>): string | undefined {
   if (tool !== 'Bash' || input.run_in_background === true) return undefined;
   const command = input.command;
-  return typeof command === 'string' && isTestCommand(command, patterns) ? command : undefined;
+  return typeof command === 'string' && isTestCommand(command, patterns, readers) ? command : undefined;
 }
 
 /** Whether a test run failed: the tool reported an error, or its result matches a failure pattern. */

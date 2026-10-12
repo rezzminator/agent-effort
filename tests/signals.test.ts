@@ -4,37 +4,94 @@ import { isTestCommand, isTestRun, returnLine, testOutcome, type ReturnWords } f
 
 const patterns = (list: string[]) => list.map((source) => new RegExp(source));
 const TEST = patterns(DEFAULTS.testCommandPatterns);
+const READERS = new Set(DEFAULTS.readerCommands);
 const FAIL = patterns(DEFAULTS.failurePatterns);
 const WORDS: ReturnWords = { red: DEFAULTS.redWords, green: DEFAULTS.greenWords };
 
 describe('isTestCommand', () => {
   it.each(['npm test', 'go test ./...', 'npx vitest run tests/a.test.ts', 'pytest -x', 'cargo test', 'make check', 'scripts/test-api.sh'])('R-5: %s is a test run', (command) => {
-    expect(isTestCommand(command, TEST)).toBe(true);
+    expect(isTestCommand(command, TEST, READERS)).toBe(true);
   });
 
   it.each(['cat README.md', 'git status', 'npm run build', 'grep -rn test src'])('R-5: %s is not', (command) => {
-    expect(isTestCommand(command, TEST)).toBe(false);
+    expect(isTestCommand(command, TEST, READERS)).toBe(false);
   });
 
   it('testCommandPatterns: python -m unittest and node --test count as test runs', () => {
     for (const command of ['python -m unittest', 'python3 -m unittest -v', 'python3.14 -m unittest discover', 'cd /tmp/x && python3 -m unittest -v 2>&1 | tail -5', 'node --test', 'node --test tests/', 'node --test-only']) {
-      expect(isTestCommand(command, TEST), command).toBe(true);
+      expect(isTestCommand(command, TEST, READERS), command).toBe(true);
     }
     for (const command of ['python3 script.py', 'python -m pip install unittest2', 'node index.js', 'node --inspect app.js']) {
-      expect(isTestCommand(command, TEST), command).toBe(false);
+      expect(isTestCommand(command, TEST, READERS), command).toBe(false);
     }
   });
 });
 
 describe('isTestRun', () => {
   it('R-5: a foreground Bash call whose command matches is a test run; its command is returned', () => {
-    expect(isTestRun('Bash', { command: 'npm test' }, TEST)).toBe('npm test');
+    expect(isTestRun('Bash', { command: 'npm test' }, TEST, READERS)).toBe('npm test');
   });
 
   it('R-5: a backgrounded run, another tool and a missing command are not', () => {
-    expect(isTestRun('Bash', { command: 'npm test', run_in_background: true }, TEST)).toBeUndefined();
-    expect(isTestRun('Read', { command: 'npm test' }, TEST)).toBeUndefined();
-    expect(isTestRun('Bash', {}, TEST)).toBeUndefined();
+    expect(isTestRun('Bash', { command: 'npm test', run_in_background: true }, TEST, READERS)).toBeUndefined();
+    expect(isTestRun('Read', { command: 'npm test' }, TEST, READERS)).toBeUndefined();
+    expect(isTestRun('Bash', {}, TEST, READERS)).toBeUndefined();
+  });
+});
+
+describe('test runs', () => {
+  it.each([
+    ["cat > brief.md <<'EOF'\nrun python3 -m unittest -v\nEOF", false],
+    ['grep -rn pytest .', false],
+    ['echo "run pytest"', false],
+    ['git commit -m "fix pytest flake"', false],
+    ['sed -n 1,20p logs/pytest.log', false],
+    ['cat <<<"pytest"', false],
+    ['ls 2>&1 | grep pytest', false],
+    ['cd x && python3 -m unittest -v 2>&1 | tail -3', true],
+    ['F=/x; python3 -m unittest > $F/log 2>&1; echo rc=$?', true],
+    ['timeout 600 npm test', true],
+    ['env CI=1 npx vitest run', true],
+    ['if pytest -q; then echo ok; fi', true],
+    ['then grep pytest x', false],
+    ['sudo -u ci make test', true],
+    ['cat > run.md <<EOF\nx\nEOF\npytest -q', true],
+    ['node --test', true],
+    ['source venv/bin/activate && pytest', true],
+    ["bash -c 'pytest -q'", true],
+    ['command -v pytest', false],
+    ['command -V pytest', false],
+    ['command pytest -q', true],
+    ['for f in a b; do pytest $f; done', true],
+    ['for x in pytest jest; do echo $x; done', false],
+    ['select t in pytest jest; do echo $t; done', false],
+    ['case x in pytest) echo no;; esac', false],
+    ['# run pytest', false],
+    ['ls # then pytest', false],
+    ['pytest -q # the unit suite', true],
+    ['echo a#b', false],
+    ['pytest tests/a#b.py', true],
+    ['out=$(npm test 2>&1 | tail -3); echo "$out"', true],
+    ['x="$(pytest -q)"', true],
+    ['echo "$(python3 -m unittest 2>&1 | tail -1)"', true],
+    ['x=`pytest -q`', true],
+    ["echo '$(pytest)'", false],
+    ['x=$(cat log | grep pytest)', false],
+    ['echo `grep pytest log`', false],
+    ['foo $(grep pytest log)', false],
+  ])('test runs: %j is a test run: %s', (command, expected) => {
+    expect(isTestCommand(command, TEST, READERS)).toBe(expected);
+  });
+
+  it('test runs: a heredoc that mentions the test command is not a test run through isTestRun either', () => {
+    expect(isTestRun('Bash', { command: "cat > b.md <<'EOF'\npytest\nEOF" }, TEST, READERS)).toBeUndefined();
+    expect(isTestRun('Bash', { command: "cat > b.md <<'EOF'\nx\nEOF\npytest" }, TEST, READERS)).toBe("cat > b.md <<'EOF'\nx\nEOF\npytest");
+  });
+
+  it('readerCommands: a custom list replaces the default', () => {
+    expect(isTestCommand('grep -rn pytest .', TEST, new Set())).toBe(true);
+    expect(isTestCommand('grep -rn pytest .', TEST, new Set(['grep']))).toBe(false);
+    expect(isTestCommand('echo pytest', TEST, new Set(['grep']))).toBe(true);
   });
 });
 

@@ -21,6 +21,8 @@ export type Settings = {
   buttons: boolean;
   announce: boolean;
   testCommandPatterns: string[];
+  /** Programs whose arguments are never a test run: a search, a print, a read. */
+  readerCommands: string[];
   failurePatterns: string[];
   redWords: string[];
   greenWords: string[];
@@ -61,6 +63,7 @@ export const DEFAULTS: Settings = {
     '\\b(rspec|phpunit|ctest|tox|nox)\\b',
     '\\bscripts?/test[\\w.-]*\\.sh\\b',
   ],
+  readerCommands: `cat grep egrep fgrep rg ag ack echo printf sed awk head tail less more ls find fd git wc which type man file stat diff jq yq sort uniq cut tr tee test [ [[ cd pushd popd mkdir rm cp mv touch chmod ln basename dirname realpath readlink date sleep true false export read wait kill`.split(' '),
   failurePatterns: ['--- FAIL', 'FAIL(ED)?', '(?<!\\d)[1-9]\\d* (failed|failing)', 'AssertionError', 'panic:', 'Traceback'],
   redWords: ['FAIL', 'FAILED', 'BLOCKED', 'PARTIAL', 'SPEC-DRIFT'],
   greenWords: ['DONE', 'PASS', 'FIXED'],
@@ -142,6 +145,7 @@ const regexItem = (item: string): string | undefined => {
 
 const wordItem = (item: string): string | undefined => (/^[A-Za-z][A-Za-z0-9_-]*$/.test(item) ? undefined : `${quote(item)} is not a word of letters, digits, _ and -`);
 const modelItem = (item: string): string | undefined => (/^\S+$/.test(item) ? undefined : `${quote(item)} is not a model id prefix (text without spaces)`);
+const readerItem = (item: string): string | undefined => (/^\S+$/.test(item) ? undefined : `${quote(item)} is not a program name (text without spaces)`);
 const dirItem = (item: string): string | undefined => (item.trim() !== '' ? undefined : 'an empty directory');
 
 const PARSERS: { [K in keyof Settings]: (raw: unknown) => Parsed<Settings[K] | 'default'> } = {
@@ -158,6 +162,7 @@ const PARSERS: { [K in keyof Settings]: (raw: unknown) => Parsed<Settings[K] | '
   buttons: parseBool,
   announce: parseBool,
   testCommandPatterns: listOf(regexItem),
+  readerCommands: listOf(readerItem),
   failurePatterns: listOf(regexItem),
   redWords: listOf(wordItem),
   greenWords: listOf(wordItem),
@@ -190,12 +195,13 @@ export function resolveSettings(raw: Readonly<Record<string, unknown>>): { setti
   return { settings: out, errors };
 }
 
-export type Compiled = { failure: RegExp[]; testCommand: RegExp[] };
+export type Compiled = { failure: RegExp[]; testCommand: RegExp[]; readers: ReadonlySet<string> };
 
-/** The pattern lists as regular expressions; both match case-sensitively. */
+/** The pattern lists as regular expressions, which match case-sensitively. */
 export function compile(settings: Settings): Compiled {
   return {
     failure: settings.failurePatterns.map((source) => new RegExp(source)),
     testCommand: settings.testCommandPatterns.map((source) => new RegExp(source)),
+    readers: new Set(settings.readerCommands),
   };
 }

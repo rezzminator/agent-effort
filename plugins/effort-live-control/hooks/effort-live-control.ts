@@ -300,7 +300,7 @@ function observe(rt: Runtime, $: EngineInterface, controller: Controller, e: Fie
     perform(rt, $, controller, controller.onSendMessage(String(e.to)).actions);
     return;
   }
-  const command = isTestRun(e.tool, e, rt.compiled.testCommand);
+  const command = isTestRun(e.tool, e, rt.compiled.testCommand, rt.compiled.readers);
   if (command !== undefined) {
     const failed = testOutcome(result.isError, text, rt.compiled.failure) === 'fail';
     perform(rt, $, controller, controller.onTestRun({ command, failed, text }).actions);

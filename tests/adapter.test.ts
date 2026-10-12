@@ -22,7 +22,7 @@ type Opts = {
 
 function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
   const files = new Map<string, string>(Object.entries(opts.files ?? {}));
-  const env: Record<string, string> = { HOME: '/home/t', ...(opts.env ?? {}) };
+  const env: Record<string, string> = { HOME: '/fixture-home/t', ...(opts.env ?? {}) };
   const judgeCalls: Array<{ request: any; resolve: (value: any) => void; reject: (error: unknown) => void }> = [];
   const registered: any[] = [];
   const statuses = new Map<string, string>();
@@ -116,7 +116,7 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
   const rows = async () => {
     await tick();
     await tick();
-    const text = files.get('/home/t/.local/state/effort-live-control/decisions.sess1.jsonl') ?? '';
+    const text = files.get('/fixture-home/t/.local/state/effort-live-control/decisions.sess1.jsonl') ?? '';
     return text.split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as Record<string, any>);
   };
   return { state, statuses, step, spawn, spawned, complete, tool, sessionStart, describeTool, fireTimers, tick, logs, timers, files, judgeCalls, registered, rows };
@@ -329,7 +329,7 @@ suite('definition effort over the tag', () => {
   });
 
   it('finds a definition in the home directory and in CLAUDE_CONFIG_DIR', async () => {
-    const x = engine(new Map(), { files: { '/home/t/.claude/agents/h.md': '---\nname: h\neffort: max\n---\n', '/cfg/agents/c.md': '---\nname: c\neffort: low\n---\n' }, env: { CLAUDE_CONFIG_DIR: '/cfg' } });
+    const x = engine(new Map(), { files: { '/fixture-home/t/.claude/agents/h.md': '---\nname: h\neffort: max\n---\n', '/cfg/agents/c.md': '---\nname: c\neffort: low\n---\n' }, env: { CLAUDE_CONFIG_DIR: '/cfg' } });
     await x.spawned('Go.', 'a1', { subagentType: 'h' });
     await x.spawned('Go.', 'a2', { subagentType: 'c' });
     expect(await x.step('a1', 'high')).toBe('max');
@@ -747,6 +747,26 @@ suite('own test runs and the judge', () => {
   });
 });
 
+suite('test runs', () => {
+  it('test runs: a heredoc that mentions the test command does not end a failing streak', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false });
+    await run('npm test', 'FAIL a');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    await run("cat > brief.md <<'EOF'\nRun python3 -m unittest -v and report.\nEOF", 'wrote brief.md');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect((await x.rows()).filter((row) => row.event === 'resolved')).toEqual([]);
+    await run('python3 -m unittest -v 2>&1 | tail -3', 'Ran 4 tests\nOK');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    expect((await x.rows()).filter((row) => row.event === 'resolved')).toMatchObject([{ from: 'high', to: 'medium' }]);
+  });
+
+  it('readerCommands: the option reaches the adapter, so an emptied list counts a grep as a test run', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false, readerCommands: [] });
+    await run('grep -rn pytest .', 'FAIL a');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+  });
+});
+
 suite('tripwires', () => {
   it('tripwires: the option disarms a kind for every steered agent', async () => {
     const { x, run } = await withLead(LEAD, { judge: false, tripwires: 'fail2,red,redispatch' });
@@ -1046,7 +1066,7 @@ suite('the decision log', () => {
     await custom.step('L1', 'low', undefined, OPUS);
     await custom.tick();
     await custom.tick();
-    expect(custom.files.has('/home/t/logs/elc.sess1.jsonl')).toBe(true);
+    expect(custom.files.has('/fixture-home/t/logs/elc.sess1.jsonl')).toBe(true);
   });
 
   it('option errors are reported once at the first hook, and the defaults apply', async () => {
