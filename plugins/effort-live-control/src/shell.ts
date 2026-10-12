@@ -154,7 +154,7 @@ function nextWord(text: string, from: number): { raw: string; start: number; end
   let i = from;
   while (i < text.length && SPACE.test(text[i] as string)) i++;
   if (i >= text.length) return undefined;
-  const start = i;
+  const wordStart = i;
   let quote = '';
   for (; i < text.length; i++) {
     const c = text[i] as string;
@@ -166,7 +166,7 @@ function nextWord(text: string, from: number): { raw: string; start: number; end
     else if (SPACE.test(c)) break;
   }
   const end = Math.min(i, text.length);
-  return { raw: text.slice(start, end), start, end };
+  return { raw: text.slice(wordStart, end), start: wordStart, end };
 }
 
 const unquote = (raw: string): string => raw.replace(/\\(.)|['"]/g, '$1');

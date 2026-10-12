@@ -323,15 +323,15 @@ function startOfSpawn(definition: Definition, tagged: Effort | undefined) {
 // A spawn returned an id: log what the tag did, tell a steered parent, and start steering the child.
 function afterSpawn(rt: Runtime, $: EngineInterface, agentId: string, type: string, parentId: string | undefined, name: string | undefined, definition: Definition, tagged: Effort | undefined, brief: string): void {
   try {
-    const start = startOfSpawn(definition, tagged);
-    if (start.row) record(rt, $, agentId, type, start.row);
+    const opening = startOfSpawn(definition, tagged);
+    if (opening.row) record(rt, $, agentId, type, opening.row);
     const parent = controllerOf(rt, parentId);
     if (parent) {
       rt.childOf.set(agentId, parent.id);
       perform(rt, $, parent, parent.onSpawn({ childId: agentId, type, name }).actions);
     }
     if (definition.control) {
-      if (start.level !== undefined) newController(rt, agentId, type, definition.control, start.level, brief);
+      if (opening.level !== undefined) newController(rt, agentId, type, definition.control, opening.level, brief);
       else rt.awaiting.set(agentId, { type, control: definition.control, brief });
     }
   } catch (error) {
