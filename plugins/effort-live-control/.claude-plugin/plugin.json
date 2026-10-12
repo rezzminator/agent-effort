@@ -74,6 +74,13 @@
       "description": "The armed tripwires, comma-separated: fail1 (the first failing test run), fail2 (the 2nd failing run in a row, then every even count), red (a sub-task returned red), redispatch (a red result sent back). A disarmed tripwire is counted but raises nothing; empty arms none. An agent's effortControl.tripwires overrides it.",
       "default": "fail1,fail2,red,redispatch"
     },
+    "struggleDecay": {
+      "type": "number",
+      "title": "struggleDecay: requests without a new tripwire before a raised effort comes home",
+      "description": "A steered agent's open struggle ends once it has made this many requests without a new tripwire: its effort returns to the level it had before, and the red sub-agent returns still open and the failing-test streak are cleared. A later tripwire opens a new struggle. 0 turns it off. An agent's effortControl.struggleDecay overrides it.",
+      "default": 20,
+      "min": 0
+    },
     "judgeModel": {
       "type": "string",
       "title": "judgeModel: the model that judges",
@@ -164,7 +171,7 @@
     "readOnlyCommands": {
       "type": "string",
       "title": "readOnlyCommands: programs that only read or print, so never run a test (names)",
-      "description": "One program name per entry. A command whose program is listed is skipped when a Bash call is checked for a test run, so grep, cat, echo or git naming a test command is not one. The Bash call is split at ; & | and newlines, heredoc bodies are dropped, and env, time, nice, nohup, sudo, command, exec and timeout are looked through. source and . are not listed because they execute.",
+      "description": "One program name per entry. A command whose program is listed is skipped when a Bash call is checked for a test run, so grep, cat, echo or git naming a test command is not one. The Bash call is split at ; & | and newlines, heredoc bodies are dropped, and env, time, nice, nohup, sudo, command, exec and timeout are looked through. source and . are not listed because they execute. A foreground Bash call whose every command is listed is also a file read, the only shell call a return line is read from.",
       "default": [
         "cat",
         "grep",

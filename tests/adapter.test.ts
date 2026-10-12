@@ -964,6 +964,110 @@ suite('children', () => {
   });
 });
 
+suite('read channel', () => {
+  // A steered agent that has spawned a child named unit-a reads each result below; a red return raises it one step.
+  it.each([
+    ['Bash', { command: './scripts/check.sh src/a.go' }, 'FAIL fmt PASS typecheck', false],
+    ['Bash', { command: './scripts/check.sh src/a.go' }, 'FAIL fmt: 2 files unformatted', false],
+    ['Bash', { command: './scripts/check.sh' }, 'FAIL fmt, PASS typecheck', false],
+    ['Bash', { command: './scripts/check.sh src/a.go' }, 'FAIL fmt\nPASS typecheck\nFAIL lint-new\nlog: /tmp/check.log rc=1', false],
+    ['Bash', { command: 'make lint 2>&1 | tail -3' }, 'FAIL lint-new', false],
+    ['Bash', { command: 'cat flight/returns/unit-a-r1.md' }, 'FAIL unit-a: two rows red', true],
+    ['Bash', { command: 'head -5 flight/returns/gate-r1.md' }, 'FAIL flight: gate red', true],
+    ['Read', { file_path: 'flight/returns/unit-a-r1.md' }, '     1\tFAIL unit-a: two rows red', true],
+    ['Bash', { command: 'cat a.md && ./run.sh' }, 'FAIL unit-a: x', false],
+  ] as const)('read channel: %s %j with result %j is red: %s', async (tool, input, text, red) => {
+    const { x } = await withLead(LEAD, { judge: false });
+    await x.spawned('Build part.', 'C1', { subagentType: 'builder', name: 'unit-a', parentAgentId: 'L1' });
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    await x.tool('L1', tool, input, { result: {}, text, isError: false });
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe(red ? 'high' : 'medium');
+    expect((await x.rows()).filter((row) => row.event === 'mechanical' && row.tripwire === 'red')).toHaveLength(red ? 1 : 0);
+  });
+
+  it('read channel: a check script\'s status line never marks a unit red, however often it prints it', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false });
+    for (let i = 0; i < 5; i++) await run('./scripts/check.sh', 'FAIL fmt: 2 files unformatted');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+  });
+
+  it('read channel: a backgrounded read is not read', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false });
+    await run('cat flight/returns/unit-a-r1.md', 'FAIL unit-a: two rows red', { run_in_background: true });
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+  });
+
+  it('read channel: the programs that read are the readOnlyCommands option', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false, readOnlyCommands: ['less'] });
+    await run('cat flight/returns/unit-a-r1.md', 'FAIL unit-a: two rows red');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    await run('less flight/returns/unit-b-r1.md', 'FAIL unit-b: red');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+  });
+});
+
+suite('struggle decay', () => {
+  const resolvedRows = async (x: ReturnType<typeof engine>) => (await x.rows()).filter((row) => row.event === 'resolved');
+
+  it('decay: the option brings a raised level home after that many requests, and the row says why', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false, struggleDecay: 3 });
+    await run('npm test', 'FAIL a');
+    for (let i = 0; i < 3; i++) expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    expect(await resolvedRows(x)).toEqual([expect.objectContaining({ agent: 'L1', from: 'high', to: 'medium', requests: 3, why: 'decay' })]);
+  });
+
+  it('decay: the default is 20 requests', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false });
+    await run('npm test', 'FAIL a');
+    for (let i = 0; i < 20; i++) expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+  });
+
+  it('decay: frontmatter overrides the option', async () => {
+    const shorter = await withLead(agentFile('lead', 'effort: medium\neffortControl:\n  struggleDecay: 2'), { judge: false, struggleDecay: 50 });
+    await shorter.run('npm test', 'FAIL a');
+    for (let i = 0; i < 2; i++) expect(await shorter.x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(await shorter.x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    const off = await withLead(agentFile('lead', 'effort: medium\neffortControl:\n  struggleDecay: 0'), { judge: false, struggleDecay: 2 });
+    await off.run('npm test', 'FAIL a');
+    for (let i = 0; i < 10; i++) expect(await off.x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(await resolvedRows(off.x)).toEqual([]);
+  });
+
+  it('decay: a bad value is reported and the default applies', async () => {
+    const option = await withLead(LEAD, { judge: false, struggleDecay: -4 });
+    await option.x.step('L1', 'low', undefined, OPUS);
+    expect(option.x.logs).toContain('effort-live-control: option "struggleDecay" is -4, not a whole number of at least 0; using the default 20');
+    await option.run('npm test', 'FAIL a');
+    for (let i = 0; i < 20; i++) await option.x.step('L1', 'low', undefined, OPUS);
+    expect(await option.x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    const frontmatter = await withLead(agentFile('lead', 'effort: medium\neffortControl:\n  struggleDecay: soon'), { judge: false, struggleDecay: 2 });
+    expect(frontmatter.x.logs.filter((line) => line.includes('effortControl.struggleDecay'))).toEqual([expect.stringContaining('"soon" is not a whole number of at least 0); using 2')]);
+    await frontmatter.run('npm test', 'FAIL a');
+    for (let i = 0; i < 2; i++) expect(await frontmatter.x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(await frontmatter.x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+  });
+
+  it('decay: the main chat decays too', async () => {
+    const { x } = withReader({ mainChat: 'tripwires', struggleDecay: 2 });
+    expect(await x.mainStep('medium', 't1')).toBe('medium');
+    await x.tool(undefined, 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    expect(await x.mainStep('medium', 't1')).toBe('high');
+    expect(await x.mainStep('medium', 't1')).toBe('high');
+    expect(await x.mainStep('medium', 't1')).toBe('medium');
+    expect(await resolvedRows(x)).toEqual([expect.objectContaining({ agent: 'main', from: 'high', to: 'medium', requests: 2, why: 'decay' })]);
+  });
+
+  it('decay: an ordinary resolution says why: resolved', async () => {
+    const { x, run } = await withLead(LEAD, { judge: false });
+    await run('npm test', 'FAIL a');
+    await x.step('L1', 'low', undefined, OPUS);
+    await run('npm test', '12 passed');
+    expect(await resolvedRows(x)).toEqual([expect.objectContaining({ from: 'high', to: 'medium', requests: 1, why: 'resolved' })]);
+  });
+});
+
 suite('buttons', () => {
   const UP = 'mcp__effort-live-control__effort_up';
   const DOWN = 'mcp__effort-live-control__effort_down';

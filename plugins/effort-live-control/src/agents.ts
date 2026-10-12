@@ -2,6 +2,7 @@ import { isEffort, isParentTag, LEVELS, type Effort, type ParentTag } from './ef
 import { parseFrontmatter } from './frontmatter.ts';
 import { parseTripwires, type Tripwire } from './judge.ts';
 import { rank } from './ladder.ts';
+import { parseDecay } from './settings.ts';
 
 export type AgentFs = {
   exists: (path: string) => Promise<boolean>;
@@ -19,10 +20,12 @@ export type ControlConfig = {
   judge: boolean;
   /** The armed tripwire kinds; empty arms none. */
   tripwires: Tripwire[];
+  /** The requests without a new tripwire after which an open struggle's level comes home; 0: never. */
+  struggleDecay: number;
 };
 
 /** The option values a frontmatter key falls back to. */
-export type ControlDefaults = { floor: Effort; ceiling: Effort; judge: boolean; tripwires: readonly Tripwire[]; parentTag: ParentTag };
+export type ControlDefaults = { floor: Effort; ceiling: Effort; judge: boolean; tripwires: readonly Tripwire[]; parentTag: ParentTag; struggleDecay: number };
 
 export type Definition = {
   /** The definition file, or undefined when the type has none (or it could not be read). */
@@ -128,7 +131,7 @@ export class Definitions {
   private control(type: string, path: string, fields: Record<string, string>, report: (line: string) => void): ControlConfig | undefined {
     const invalid = (key: string, why: string, fallback: string) =>
       report(`effort-live-control: ${path} ${key} for ${type} is invalid (${why}); using ${fallback}`);
-    const { floor: defaultFloor, ceiling: defaultCeiling, judge: defaultJudge, tripwires: defaultTripwires } = this.defaults;
+    const { floor: defaultFloor, ceiling: defaultCeiling, judge: defaultJudge, tripwires: defaultTripwires, struggleDecay: defaultDecay } = this.defaults;
     const bare = fields.effortControl;
     if (bare !== undefined && bare.trim() !== '') {
       const on = parseSwitch(bare);
@@ -136,7 +139,7 @@ export class Definitions {
         invalid('effortControl', 'not on, off, true, false, yes or no', 'off');
         return undefined;
       }
-      return on ? { floor: defaultFloor, ceiling: defaultCeiling, landing: [], judge: defaultJudge, tripwires: [...defaultTripwires] } : undefined;
+      return on ? { floor: defaultFloor, ceiling: defaultCeiling, landing: [], judge: defaultJudge, tripwires: [...defaultTripwires], struggleDecay: defaultDecay } : undefined;
     }
     // `parentTag` steers nothing: alone it pins a type without turning steering on.
     if (!Object.keys(fields).some((key) => key.startsWith('effortControl.') && key !== 'effortControl.parentTag')) return undefined;
@@ -174,7 +177,14 @@ export class Definitions {
       if (found.ok) tripwires = found.value;
       else invalid('effortControl.tripwires', found.why, tripwires.join(','));
     }
-    return { floor, ceiling, landing, judge: flag('judge', defaultJudge), tripwires };
+    let struggleDecay = defaultDecay;
+    const rawDecay = fields['effortControl.struggleDecay'];
+    if (rawDecay !== undefined) {
+      const found = parseDecay(rawDecay);
+      if (found.ok) struggleDecay = found.value;
+      else invalid('effortControl.struggleDecay', `${JSON.stringify(rawDecay)} is ${found.why}`, String(defaultDecay));
+    }
+    return { floor, ceiling, landing, judge: flag('judge', defaultJudge), tripwires, struggleDecay };
   }
 
   private async fields(path: string, type: string, report: (line: string) => void): Promise<Record<string, string> | 'failed'> {

@@ -22,6 +22,21 @@ export function isTestRun(tool: string, input: Readonly<Record<string, unknown>>
   return typeof command === 'string' && isTestCommand(command, patterns, readOnly) ? command : undefined;
 }
 
+const NO_PROGRAMS: ReadonlySet<string> = new Set();
+
+/**
+ * Whether a tool call's result is a file read, the only place a return line is read from: the `Read` tool, or a
+ * foreground `Bash` call that runs something and only `readOnly` programs. A call that runs any other program, or
+ * nothing, is not: a program's output is never a child's return.
+ */
+export function isRead(tool: string, input: Readonly<Record<string, unknown>>, readOnly: ReadonlySet<string>): boolean {
+  if (tool === 'Read') return true;
+  if (tool !== 'Bash' || input.run_in_background === true) return false;
+  const command = input.command;
+  if (typeof command !== 'string') return false;
+  return runSegments(command, NO_PROGRAMS).length > 0 && runSegments(command, readOnly).length === 0;
+}
+
 /** Whether a test run failed: the tool reported an error, or its result matches a failure pattern. */
 export function testOutcome(isError: boolean | undefined, text: string, failure: readonly RegExp[]): 'fail' | 'pass' {
   return isError === true || failure.some((pattern) => pattern.test(text)) ? 'fail' : 'pass';

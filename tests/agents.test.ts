@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Definitions, type AgentFs, type ControlDefaults } from '../plugins/effort-live-control/src/agents.ts';
 
 const ALL = ['fail1', 'fail2', 'red', 'redispatch'] as const;
-const DEFAULTS: ControlDefaults = { floor: 'medium', ceiling: 'xhigh', judge: true, tripwires: ALL, parentTag: 'honor' };
+const DEFAULTS: ControlDefaults = { floor: 'medium', ceiling: 'xhigh', judge: true, tripwires: ALL, parentTag: 'honor', struggleDecay: 20 };
 
 // A stand-in file system: a map of path → text; a path listed in `broken` fails to read.
 function standIn(files: Record<string, string>, broken: string[] = []) {
@@ -93,6 +93,37 @@ describe('effortControl.tripwires', () => {
   });
 });
 
+describe('effortControl.struggleDecay', () => {
+  const control = async (frontmatter: string) => {
+    const x = standIn({ '/a/t.md': `---\nname: t\n${frontmatter}\n---\n` });
+    return { found: await x.defs(['/a']).resolve('t'), logs: x.logs };
+  };
+
+  it('decay: frontmatter overrides the option, and 0 turns it off for that agent', async () => {
+    expect((await control('effortControl:\n  struggleDecay: 5')).found.control?.struggleDecay).toBe(5);
+    expect((await control('effortControl:\n  struggleDecay: 0')).found.control?.struggleDecay).toBe(0);
+  });
+
+  it('decay: an agent that does not set it takes the option', async () => {
+    expect((await control('effortControl:\n  floor: low')).found.control?.struggleDecay).toBe(20);
+    expect((await control('effortControl: on')).found.control?.struggleDecay).toBe(20);
+  });
+
+  it('decay: the key alone turns steering on', async () => {
+    expect((await control('effortControl:\n  struggleDecay: 8')).found.control).toMatchObject({ struggleDecay: 8 });
+  });
+
+  it('decay: a bad value is reported by key and value and the default applies', async () => {
+    for (const raw of ['-3', '2.5', 'soon', '']) {
+      const { found, logs } = await control(`effortControl:\n  struggleDecay: ${raw}`);
+      expect(found.control?.struggleDecay, raw).toBe(20);
+      expect(logs, raw).toEqual([expect.stringContaining('/a/t.md effortControl.struggleDecay for t is invalid (')]);
+      expect(logs[0], raw).toContain(`${JSON.stringify(raw)} is not a whole number of at least 0`);
+      expect(logs[0], raw).toContain('; using 20');
+    }
+  });
+});
+
 describe('effortControl', () => {
   const control = async (frontmatter: string) => {
     const x = standIn({ '/a/t.md': `---\nname: t\n${frontmatter}\n---\n` });
@@ -101,7 +132,7 @@ describe('effortControl', () => {
   };
 
   it.each(['on', 'true', 'yes', 'ON', 'Yes'])('R-3: bare effortControl: %s switches steering on with the option defaults', async (word) => {
-    expect((await control(`effortControl: ${word}`)).found.control).toEqual({ floor: 'medium', ceiling: 'xhigh', landing: [], judge: true, tripwires: [...ALL] });
+    expect((await control(`effortControl: ${word}`)).found.control).toEqual({ floor: 'medium', ceiling: 'xhigh', landing: [], judge: true, tripwires: [...ALL], struggleDecay: 20 });
   });
 
   it.each(['off', 'false', 'no', 'OFF'])('R-3: bare effortControl: %s leaves the agent unsteered', async (word) => {
@@ -114,7 +145,7 @@ describe('effortControl', () => {
 
   it('R-3: the nested form is on by default and reads floor, ceiling, landing and judge', async () => {
     const { found } = await control('effortControl:\n  floor: low\n  ceiling: max\n  landing: lander, reviewer  tester\n  judge: off');
-    expect(found.control).toEqual({ floor: 'low', ceiling: 'max', landing: ['lander', 'reviewer', 'tester'], judge: false, tripwires: [...ALL] });
+    expect(found.control).toEqual({ floor: 'low', ceiling: 'max', landing: ['lander', 'reviewer', 'tester'], judge: false, tripwires: [...ALL], struggleDecay: 20 });
   });
 
   it('R-3: nested enabled: off turns steering off whatever else is set', async () => {
@@ -124,7 +155,7 @@ describe('effortControl', () => {
 
   it('R-3: an invalid value is logged with its key, the type and the default, and the default used', async () => {
     const { found, logs } = await control('effortControl:\n  floor: sideways\n  ceiling: max');
-    expect(found.control).toEqual({ floor: 'medium', ceiling: 'max', landing: [], judge: true, tripwires: [...ALL] });
+    expect(found.control).toEqual({ floor: 'medium', ceiling: 'max', landing: [], judge: true, tripwires: [...ALL], struggleDecay: 20 });
     const line = 'effort-live-control: /a/t.md effortControl.floor for t is invalid (not a level: low, medium, high, xhigh, max); using medium';
     expect(logs).toEqual([line]);
     expect(found.errors).toEqual([line]);
@@ -146,8 +177,8 @@ describe('effortControl', () => {
   it('R-3: the option defaults come from the settings, not constants', async () => {
     const files = { '/a/t.md': '---\nname: t\neffortControl: on\n---\n' };
     const x = standIn(files);
-    const defs = new Definitions(['/a'], { floor: 'low', ceiling: 'high', judge: false, tripwires: ['red'], parentTag: 'honor' }, { exists: async () => true, read: async () => files['/a/t.md'], listMarkdown: async () => [] }, () => {});
-    expect((await defs.resolve('t')).control).toEqual({ floor: 'low', ceiling: 'high', landing: [], judge: false, tripwires: ['red'] });
+    const defs = new Definitions(['/a'], { floor: 'low', ceiling: 'high', judge: false, tripwires: ['red'], parentTag: 'honor', struggleDecay: 7 }, { exists: async () => true, read: async () => files['/a/t.md'], listMarkdown: async () => [] }, () => {});
+    expect((await defs.resolve('t')).control).toEqual({ floor: 'low', ceiling: 'high', landing: [], judge: false, tripwires: ['red'], struggleDecay: 7 });
     expect(x.logs).toEqual([]);
   });
 });

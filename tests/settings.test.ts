@@ -26,10 +26,11 @@ describe('resolveSettings', () => {
       logPackets: false,
       tripwires: 'fail1,fail2,red,redispatch',
       parentTag: 'honor',
+      struggleDecay: 20,
     });
     expect(DEFAULTS.testCommandPatterns).toHaveLength(17);
     expect(DEFAULTS.failurePatterns).toHaveLength(6);
-    expect(SETTING_KEYS).toHaveLength(25);
+    expect(SETTING_KEYS).toHaveLength(26);
   });
 
   it('reads valid values of every kind', () => {
@@ -130,6 +131,25 @@ describe('parentTag option', () => {
       const { settings, errors } = resolveSettings({ parentTag: raw });
       expect(settings.parentTag, String(raw)).toBe('honor');
       expect(errors, String(raw)).toEqual([`effort-live-control: option "parentTag" is ${JSON.stringify(raw)}, not honor or ignore; using the default "honor"`]);
+    }
+  });
+});
+
+describe('struggleDecay option', () => {
+  it('decay: 20 is the default, and a whole number from 0 up is read, as a number or as text', () => {
+    expect(resolveSettings({}).settings.struggleDecay).toBe(20);
+    expect(resolveSettings({ struggleDecay: 0 })).toEqual({ settings: { ...DEFAULTS, struggleDecay: 0 }, errors: [] });
+    expect(resolveSettings({ struggleDecay: 7 }).settings.struggleDecay).toBe(7);
+    expect(resolveSettings({ struggleDecay: '12' }).settings.struggleDecay).toBe(12);
+  });
+
+  it('decay: a bad value is reported by key and value and the default applies', () => {
+    for (const raw of [-1, 1.5, 'soon', '', null, true]) {
+      const { settings, errors } = resolveSettings({ struggleDecay: raw });
+      expect(settings.struggleDecay, String(raw)).toBe(20);
+      expect(errors, String(raw)).toHaveLength(1);
+      expect(errors[0], String(raw)).toContain(`option "struggleDecay" is ${JSON.stringify(raw)}`);
+      expect(errors[0], String(raw)).toContain('using the default 20');
     }
   });
 });

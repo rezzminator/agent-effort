@@ -19,6 +19,8 @@ export type Settings = {
   judgeRaiseAt: number;
   /** A comma list of the armed tripwire kinds: fail1, fail2, red, redispatch. Empty arms none. */
   tripwires: string;
+  /** The requests a steered agent's open struggle may go without a new tripwire before its level comes home; 0: never. */
+  struggleDecay: number;
   judgeModel: string;
   judgeEffort: Effort;
   judgeTimeoutMs: number;
@@ -31,7 +33,7 @@ export type Settings = {
   buttons: boolean;
   announce: boolean;
   testCommandPatterns: string[];
-  /** Programs whose arguments are never a test run: a search, a print, a read. */
+  /** Programs whose arguments are never a test run: a search, a print, a read. A Bash call that runs only these is a file read. */
   readOnlyCommands: string[];
   failurePatterns: string[];
   redWords: string[];
@@ -49,6 +51,7 @@ export const DEFAULTS: Settings = {
   judge: false,
   judgeRaiseAt: 25,
   tripwires: 'fail1,fail2,red,redispatch',
+  struggleDecay: 20,
   judgeModel: 'haiku',
   judgeEffort: 'xhigh',
   judgeTimeoutMs: 45000,
@@ -115,6 +118,12 @@ const parseInt1 = (raw: unknown): Parsed<number> => {
   return Number.isInteger(n) && n >= 1 ? good(n) : bad('not a whole number of at least 1');
 };
 
+/** A whole number of 0 or more; shared by the `struggleDecay` option and the `effortControl.struggleDecay` key. */
+export const parseDecay = (raw: unknown): Parsed<number> => {
+  const n = toNumber(raw);
+  return Number.isInteger(n) && n >= 0 ? good(n) : bad('not a whole number of at least 0');
+};
+
 const parsePercent = (raw: unknown): Parsed<number> => {
   const n = toNumber(raw);
   return Number.isInteger(n) && n >= 0 && n <= 100 ? good(n) : bad('not a whole number from 0 to 100');
@@ -176,6 +185,7 @@ const PARSERS: { [K in keyof Settings]: (raw: unknown) => Parsed<Settings[K] | '
   judge: parseBool,
   judgeRaiseAt: parsePercent,
   tripwires: parseTripwireList,
+  struggleDecay: parseDecay,
   judgeModel: parseModel,
   judgeEffort: parseLevel,
   judgeTimeoutMs: parseInt1,

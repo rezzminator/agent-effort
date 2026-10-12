@@ -78,6 +78,22 @@ describe('plugin options', () => {
     }
   });
 
+  it('defaults: struggleDecay agrees across code, manifest and both READMEs', () => {
+    expect(DEFAULTS.struggleDecay).toBe(20);
+    expect(manifest.userConfig.struggleDecay).toMatchObject({ type: 'number', default: 20, min: 0 });
+    expect(manifest.userConfig.struggleDecay.multiple).toBeUndefined();
+    expect(manifest.userConfig.struggleDecay.title.startsWith('struggleDecay: ')).toBe(true);
+    for (const [path, readme] of readmes) {
+      const row = readme.split('\n').find((line) => line.startsWith('| `struggleDecay` |'));
+      expect(row, path).toContain('| `20` |');
+      expect(row, path).toContain('`effortControl.struggleDecay`');
+      expect(row, path).toContain('`0`');
+      expect(readme, path).toContain('`struggleDecay`');
+    }
+    const [root] = readmes;
+    expect(root![1]).toContain('| `effortControl.struggleDecay` |');
+  });
+
   it('readOnlyCommands: agrees across the code, the manifest and both READMEs', () => {
     expect(DEFAULTS.readOnlyCommands).toContain('grep');
     expect(DEFAULTS.readOnlyCommands).not.toContain('source');

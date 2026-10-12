@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULTS } from '../plugins/effort-live-control/src/settings.ts';
-import { isTestCommand, isTestRun, returnLine, testOutcome, type ReturnWords } from '../plugins/effort-live-control/src/signals.ts';
+import { isRead, isTestCommand, isTestRun, returnLine, testOutcome, type ReturnWords } from '../plugins/effort-live-control/src/signals.ts';
 
 const patterns = (list: string[]) => list.map((source) => new RegExp(source));
 const TEST = patterns(DEFAULTS.testCommandPatterns);
@@ -24,6 +24,37 @@ describe('isTestCommand', () => {
     for (const command of ['python3 script.py', 'python -m pip install unittest2', 'node index.js', 'node --inspect app.js']) {
       expect(isTestCommand(command, TEST, READ_ONLY), command).toBe(false);
     }
+  });
+});
+
+describe('isRead', () => {
+  it.each(['cat flight/returns/a-r1.md', 'head -5 a.md', 'sed -n 1,20p a.md', 'cat a.md | head -3', 'cd flight && cat returns/a.md', 'grep -n FAIL a.md', 'cat <<EOF\nFAIL x\nEOF'])('read channel: %s only reads', (command) => {
+    expect(isRead('Bash', { command }, READ_ONLY)).toBe(true);
+  });
+
+  it.each(['./scripts/check.sh src/a.go', 'make lint 2>&1 | tail -3', 'cat a.md && ./run.sh', 'npm run build', 'node tool.js', 'bash -c "cat a.md"', 'cat a.md; python3 report.py'])('read channel: %s runs a program', (command) => {
+    expect(isRead('Bash', { command }, READ_ONLY)).toBe(false);
+  });
+
+  it('read channel: the Read tool is always a read', () => {
+    expect(isRead('Read', { file_path: 'a.md' }, READ_ONLY)).toBe(true);
+  });
+
+  it('read channel: a backgrounded call, a missing or empty command, comments alone and another tool are not reads', () => {
+    expect(isRead('Bash', { command: 'cat a.md', run_in_background: true }, READ_ONLY)).toBe(false);
+    expect(isRead('Bash', {}, READ_ONLY)).toBe(false);
+    expect(isRead('Bash', { command: 42 }, READ_ONLY)).toBe(false);
+    expect(isRead('Bash', { command: '' }, READ_ONLY)).toBe(false);
+    expect(isRead('Bash', { command: '   \n' }, READ_ONLY)).toBe(false);
+    expect(isRead('Bash', { command: '# cat a.md' }, READ_ONLY)).toBe(false);
+    expect(isRead('Grep', { pattern: 'FAIL' }, READ_ONLY)).toBe(false);
+    expect(isRead('Edit', { command: 'cat a.md' }, READ_ONLY)).toBe(false);
+  });
+
+  it('read channel: the programs that read are the readOnlyCommands in force', () => {
+    expect(isRead('Bash', { command: 'cat a.md' }, new Set(['less']))).toBe(false);
+    expect(isRead('Bash', { command: 'less a.md' }, new Set(['less']))).toBe(true);
+    expect(isRead('Bash', { command: 'cat a.md' }, new Set())).toBe(false);
   });
 });
 

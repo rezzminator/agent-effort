@@ -5,7 +5,7 @@ import type { Effort } from './effort.ts';
 import { collapse, packet as buildPacket, parseAnswer, type Tripwire } from './judge.ts';
 import { clamp, rank, step } from './ladder.ts';
 import { returnLine, type ReturnWords } from './signals.ts';
-import { announceLine, boundText, buttonText, whyChild, whyJudge, whyRedispatch, whyResolved, WHY_FAIL1, WHY_FAIL2, WHY_JUDGE_FAILED, WHY_LANDING, type Direction } from './text.ts';
+import { announceLine, boundText, buttonText, whyChild, whyDecayed, whyJudge, whyRedispatch, whyResolved, WHY_FAIL1, WHY_FAIL2, WHY_JUDGE_FAILED, WHY_LANDING, type Direction } from './text.ts';
 
 export type Row = Record<string, unknown>;
 
@@ -37,12 +37,15 @@ export type Setup = {
   models: readonly string[];
   words: ReturnWords;
   announce: boolean;
+  /** The requests an open struggle goes without a new tripwire before its level comes home; 0: never. */
+  struggleDecay: number;
   /** The spawn prompt after the tag was stripped. */
   brief: string;
 };
 
 type Child = { type: string; name: string | undefined; unit: string | undefined };
-type Struggle = { epoch: number; pre: Effort; requests: number };
+/** `requests` counts the struggle's raised requests; `quiet` the ones since its last tripwire. */
+type Struggle = { epoch: number; pre: Effort; requests: number; quiet: number };
 type Usage = { input_tokens: number; output_tokens: number };
 
 const RING = 12;
@@ -123,8 +126,12 @@ export class Controller {
     }
     const sent = this.level;
     this.requests[sent] = (this.requests[sent] ?? 0) + 1;
-    if (this.struggle) this.struggle.requests += 1;
+    if (this.struggle) {
+      this.struggle.requests += 1;
+      this.struggle.quiet += 1;
+    }
     actions.push(log('step', { model, requested: requested ?? null, sent, struggle: this.struggle !== undefined }));
+    if (this.struggle && this.setup.struggleDecay > 0 && this.struggle.quiet >= this.setup.struggleDecay) this.close(actions, 'decay');
     return { send: sent, actions };
   }
 
@@ -177,7 +184,7 @@ export class Controller {
     return this.take(found, child?.type ?? '?', found.unit ?? child?.type ?? '?', child, answer);
   }
 
-  /** A result the agent read (Read, a non-test Bash such as a cat of a return file). */
+  /** A result the agent read: a `Read`, or a Bash call that only runs read-only programs such as a cat of a return file. */
   onRead(text: string): Outcome {
     const found = returnLine(text, 'read', this.setup.words);
     if (!found) return { actions: [] };
@@ -304,9 +311,10 @@ export class Controller {
   private tripwire(kind: Tripwire, why: string, actions: Action[], returnHead?: string): void {
     if (!this.setup.tripwires.has(kind)) return;
     if (!this.struggle) {
-      this.struggle = { epoch: ++this.epochs, pre: this.base, requests: 0 };
+      this.struggle = { epoch: ++this.epochs, pre: this.base, requests: 0, quiet: 0 };
       this.struggles += 1;
     }
+    this.struggle.quiet = 0;
     if (!this.setup.judge) {
       const from = this.level;
       this.setLevel(step(this.level, +1, this.setup.floor, this.setup.ceiling), why);
@@ -352,10 +360,23 @@ export class Controller {
 
   private resolve(actions: Action[]): void {
     if (!this.struggle || this.ownFails !== 0 || this.reds.size !== 0) return;
+    this.close(actions, 'resolved');
+  }
+
+  // The open struggle ends and the level goes back to its pre level. A decay also clears what held it open: the
+  // failure streak and the open child reds.
+  private close(actions: Action[], why: 'resolved' | 'decay'): void {
+    if (!this.struggle) return;
     const { pre, requests } = this.struggle;
     const from = this.level;
     this.struggle = undefined;
-    this.setLevel(pre, whyResolved(pre));
-    actions.push(log('resolved', { from, to: this.level, requests }));
+    if (why === 'decay') {
+      this.ownFails = 0;
+      this.reds.clear();
+      this.heads.clear();
+    }
+    this.base = pre;
+    this.setLevel(pre, why === 'decay' ? whyDecayed(pre, this.setup.struggleDecay) : whyResolved(pre));
+    actions.push(log('resolved', { from, to: this.level, requests, why }));
   }
 }

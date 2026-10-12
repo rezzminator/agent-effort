@@ -35,3 +35,4 @@ export const whyChild = (childType: string, token: string): string => `${childTy
 export const whyRedispatch = (type: string): string => `${type} sent back a red result`;
 export const whyJudge = (reason: string): string => `judge: ${reason === '' ? 'no reason given' : reason}`;
 export const whyResolved = (level: string): string => `the trouble is resolved, back to ${level}`;
+export const whyDecayed = (level: string, requests: number): string => `no new trouble for ${requests} requests, back to ${level}`;

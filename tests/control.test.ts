@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Controller, type Action, type Outcome, type Setup } from '../plugins/effort-live-control/src/control.ts';
-import { TRIPWIRES } from '../plugins/effort-live-control/src/judge.ts';
+import { TRIPWIRES, type Tripwire } from '../plugins/effort-live-control/src/judge.ts';
 import { DEFAULTS } from '../plugins/effort-live-control/src/settings.ts';
 
 const USAGE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
@@ -19,6 +19,7 @@ function make(over: Partial<Setup> = {}): Controller {
     models: DEFAULTS.models,
     words: { red: DEFAULTS.redWords, green: DEFAULTS.greenWords },
     announce: true,
+    struggleDecay: DEFAULTS.struggleDecay,
     brief: 'Coordinate the build of X.',
     ...over,
   });
@@ -445,7 +446,7 @@ describe('resolution', () => {
     const out = c.onTestRun(PASS);
     expect(c.level).toBe('high');
     expect(c.struggleOpen).toBe(false);
-    expect(rows(out, 'resolved')).toEqual([{ event: 'resolved', from: 'xhigh', to: 'high', requests: 2 }]);
+    expect(rows(out, 'resolved')).toEqual([{ event: 'resolved', from: 'xhigh', to: 'high', requests: 2, why: 'resolved' }]);
   });
 
   it('R-10: a pass does not resolve while a red unit is open; the green return then does', () => {
@@ -769,5 +770,126 @@ describe('setHome (a new turn of the main chat)', () => {
     const out = c.onTestRun(FAIL);
     expect(c.ownFails).toBe(2);
     expect(rows(out, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail2', from: 'high', to: 'xhigh' }]);
+  });
+});
+
+describe('struggle decay', () => {
+  const MODEL = 'claude-opus-5-5';
+  const quiet = (c: Controller, n: number): Outcome[] => Array.from({ length: n }, () => c.onRequest(MODEL, undefined));
+
+  it('decay: a struggle with no tripwire for struggleDecay requests resolves to its pre level', () => {
+    const c = make({ judge: false, struggleDecay: 20 });
+    c.onTestRun(FAIL);
+    expect(c.level).toBe('high');
+    const early = quiet(c, 19);
+    expect(early.flatMap((o) => rows(o, 'resolved'))).toEqual([]);
+    expect(c.level).toBe('high');
+    expect(c.struggleOpen).toBe(true);
+    const last = c.onRequest(MODEL, undefined);
+    expect(rows(last, 'resolved')).toEqual([{ event: 'resolved', from: 'high', to: 'medium', requests: 20, why: 'decay' }]);
+    expect(c.level).toBe('medium');
+    expect(c.struggleOpen).toBe(false);
+    expect(c.onRequest(MODEL, undefined).send).toBe('medium');
+    expect(c.takeAnnouncement()).toContain('back to medium');
+  });
+
+  it('decay: a tripwire inside the window restarts the count', () => {
+    const c = make({ judge: false, struggleDecay: 20 });
+    c.onTestRun(FAIL);
+    quiet(c, 15);
+    c.onTestRun(FAIL); // the 2nd failing run in a row is a tripwire
+    expect(c.level).toBe('xhigh');
+    quiet(c, 19);
+    expect(c.struggleOpen).toBe(true);
+    const last = c.onRequest(MODEL, undefined);
+    expect(rows(last, 'resolved')).toEqual([{ event: 'resolved', from: 'xhigh', to: 'medium', requests: 35, why: 'decay' }]);
+    expect(c.level).toBe('medium');
+  });
+
+  it('decay: a disarmed tripwire does not restart the count', () => {
+    const c = make({ judge: false, struggleDecay: 4, tripwires: new Set<Tripwire>(['fail1']) });
+    c.onTestRun(FAIL);
+    quiet(c, 2);
+    c.onTestRun(FAIL);
+    c.onTestRun(FAIL); // fail2, not armed
+    quiet(c, 1);
+    expect(c.struggleOpen).toBe(true);
+    expect(rows(c.onRequest(MODEL, undefined), 'resolved')).toHaveLength(1);
+  });
+
+  it('decay: an open child red is cleared by decay, and a later passing test run then needs no green return', () => {
+    const c = make({ judge: false, struggleDecay: 5 });
+    c.onSpawn({ childId: 'c1', type: 'builder' });
+    c.onChildReturn('c1', 'FAIL parser');
+    expect(c.reds.size).toBe(1);
+    quiet(c, 5);
+    expect(c.struggleOpen).toBe(false);
+    expect(c.reds.size).toBe(0);
+    expect(c.level).toBe('medium');
+    c.onTestRun(FAIL);
+    expect(c.struggleOpen).toBe(true);
+    expect(c.level).toBe('high');
+    c.onTestRun(PASS);
+    expect(c.struggleOpen).toBe(false);
+    expect(c.level).toBe('medium');
+  });
+
+  it('decay: the failure streak resets, so the next failing run is a first failure again', () => {
+    const c = make({ judge: false, struggleDecay: 3 });
+    c.onTestRun(FAIL);
+    c.onTestRun(FAIL);
+    expect(c.ownFails).toBe(2);
+    quiet(c, 3);
+    expect(c.ownFails).toBe(0);
+    expect(rows(c.onTestRun(FAIL), 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail1', from: 'medium', to: 'high' }]);
+  });
+
+  it('decay: a later tripwire opens a new struggle from the level in force', () => {
+    const c = make({ judge: false, struggleDecay: 2, home: 'high' });
+    c.onTestRun(FAIL);
+    quiet(c, 2);
+    expect(c.level).toBe('high');
+    c.onTestRun(FAIL);
+    expect(c.struggleOpen).toBe(true);
+    expect(c.level).toBe('xhigh');
+    quiet(c, 2);
+    expect(c.level).toBe('high');
+    expect(c.end()).toMatchObject({ struggles: 2 });
+  });
+
+  it('decay: a home that moved during the struggle is the level a later struggle opens from', () => {
+    const c = make({ judge: false, struggleDecay: 2 });
+    c.onTestRun(FAIL);
+    c.setHome('high');
+    quiet(c, 2);
+    expect(c.level).toBe('high');
+    c.onTestRun(FAIL);
+    c.onTestRun(PASS);
+    expect(c.level).toBe('high');
+  });
+
+  it('decay: 0 turns it off', () => {
+    const c = make({ judge: false, struggleDecay: 0 });
+    c.onTestRun(FAIL);
+    const all = quiet(c, 200);
+    expect(all.flatMap((o) => rows(o, 'resolved'))).toEqual([]);
+    expect(c.struggleOpen).toBe(true);
+    expect(c.level).toBe('high');
+  });
+
+  it('decay: a judge answer for a decayed struggle is dropped as stale', () => {
+    const c = make({ struggleDecay: 2 });
+    const [call] = judges(c.onTestRun(FAIL));
+    quiet(c, 2);
+    expect(c.struggleOpen).toBe(false);
+    expect(rows(c.onJudgeAnswer(call!.epoch, '90 - stuck', 1, USAGE), 'judge-stale')).toHaveLength(1);
+    expect(c.level).toBe('medium');
+  });
+
+  it('decay: a request on a gated model is not counted', () => {
+    const c = make({ judge: false, struggleDecay: 2 });
+    c.onTestRun(FAIL);
+    for (let i = 0; i < 5; i++) c.onRequest('claude-haiku-5-5', undefined);
+    expect(c.struggleOpen).toBe(true);
   });
 });

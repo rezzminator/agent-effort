@@ -7,7 +7,7 @@ import { clamp, isLevel } from '../src/ladder.ts';
 import { appendRows, sessionLogPath } from '../src/log.ts';
 import { buildReader, CasebookCache, decide, NO_PREVIOUS, parseReaderAnswer, resolveCasebook, type CasebookIo } from '../src/reader.ts';
 import { compile, resolveSettings, type Compiled, type Settings } from '../src/settings.ts';
-import { isTestRun, testOutcome } from '../src/signals.ts';
+import { isRead, isTestRun, testOutcome } from '../src/signals.ts';
 import { startOf } from '../src/start.ts';
 import { BUTTON_DOWN, BUTTON_UP, REFUSED, type Direction } from '../src/text.ts';
 
@@ -205,7 +205,7 @@ function start(rt: Runtime, $: EngineInterface): Promise<void> {
     const dirs = [`${cwd}/.claude/agents`, ...(configDir ? [`${configDir}/agents`] : []), ...(home ? [`${home}/.claude/agents`] : []), ...rt.config.agentDirs];
     rt.defs = new Definitions(
       dirs,
-      { floor: rt.config.floor, ceiling: rt.config.ceiling, judge: rt.config.judge, tripwires: tripwiresOf(rt.config.tripwires), parentTag: rt.config.parentTag },
+      { floor: rt.config.floor, ceiling: rt.config.ceiling, judge: rt.config.judge, tripwires: tripwiresOf(rt.config.tripwires), parentTag: rt.config.parentTag, struggleDecay: rt.config.struggleDecay },
       {
         exists: (path) => $.fs.exists(path),
         read: (path) => $.fs.read(path),
@@ -253,6 +253,7 @@ function newMain(rt: Runtime, home: Effort): Controller {
     models: rt.config.models,
     words: { red: rt.config.redWords, green: rt.config.greenWords },
     announce: rt.config.announce,
+    struggleDecay: rt.config.struggleDecay,
     brief: '(the main chat)',
   });
 }
@@ -271,6 +272,7 @@ function newController(rt: Runtime, id: string, type: string, control: ControlCo
     models: rt.config.models,
     words: { red: rt.config.redWords, green: rt.config.greenWords },
     announce: rt.config.announce,
+    struggleDecay: control.struggleDecay,
     brief,
   });
   rt.steered.set(id, controller);
@@ -363,7 +365,7 @@ function observe(rt: Runtime, $: EngineInterface, controller: Controller, e: Fie
     perform(rt, $, controller, controller.onTestRun({ command, failed, text }).actions);
     return;
   }
-  if (e.tool === 'Read' || (e.tool === 'Bash' && e.run_in_background !== true)) perform(rt, $, controller, controller.onRead(text).actions);
+  if (isRead(e.tool, e, rt.compiled.readOnly)) perform(rt, $, controller, controller.onRead(text).actions);
 }
 
 function answerButton(rt: Runtime, $: EngineInterface, agentId: string | undefined, direction: Direction): { result: string } {
