@@ -2,6 +2,12 @@
 
 Every release of effort-live-control (named agent-effort through 0.1.3). Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `effort-live-control--v<version>` (`agent-effort--v<version>` through 0.1.3), with a GitHub release carrying the section below.
 
+## [0.3.0] — 2026-10-14
+
+### Added
+- Append-only error, warning and info JSONL files under `PLUGIN_LOG_DIR/effort-live-control`, falling back to `$HOME/.local/state/effort-live-control/logs`. The writer adds a per-session heartbeat, stable event locations, private file modes, a 4096-byte row cap and rename-aside rotation over 20 MiB. Failed writes report once per failing streak without affecting effort control; existing notices and decision logs stay unchanged.
+- Unreadable pins and unavailable judges are visible as warning rows. Applied effort changes are info rows, without prompt, transcript or tool-input bodies.
+
 ## [0.2.0] — 2026-10-12
 
 ### Added

@@ -1,4 +1,10 @@
-import { describe as suite, expect, it } from 'vitest';
+import { afterEach, describe as suite, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Controller } from '../plugins/effort-live-control/src/control.ts';
 import { register } from '../plugins/effort-live-control/hooks/effort-live-control.ts';
 import { BUNDLED_CASEBOOK } from '../plugins/effort-live-control/src/bundled-casebook.ts';
 
@@ -16,7 +22,9 @@ type Opts = {
   /** Files the stand-in file system holds: absolute path → text. */
   files?: Record<string, string>;
   options?: Record<string, unknown>;
-  env?: Record<string, string>;
+  env?: Record<string, string | undefined>;
+  run?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  noProcess?: boolean;
   /** Paths whose read throws. */
   broken?: string[];
   /** The main loop's model, as `$.session.model()` answers. */
@@ -30,7 +38,7 @@ type Opts = {
 function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
   const files = new Map<string, string>(Object.entries(opts.files ?? {}));
   const mtimes = new Map<string, number>();
-  const env: Record<string, string> = { HOME: '/fixture-home/t', ...(opts.env ?? {}) };
+  const env: Record<string, string | undefined> = { HOME: '/fixture-home/t', ...(opts.env ?? {}) };
   const judgeCalls: Array<{ request: any; resolve: (value: any) => void; reject: (error: unknown) => void }> = [];
   const registered: any[] = [];
   const statuses = new Map<string, string>();
@@ -44,6 +52,7 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
     },
     // A sleep the test fires; its signal aborting rejects it and drops its timer.
     clock: {
+      now: async () => 1791991231123,
       sleep: (_ms: number, options?: { signal?: AbortSignal }) =>
         new Promise<void>((resolve, reject) => {
           const signal = options?.signal;
@@ -55,6 +64,7 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
         }),
     },
     ui: { log: (line: string) => logs.push(line) },
+    ...(opts.noProcess ? {} : { process: { run: opts.run ?? (async () => ({ exitCode: 0, stdout: '', stderr: '' })) } }),
     agent: { list: async () => [...statuses].map(([id, status]) => ({ id, status, type: 'general-purpose', description: '' })) },
     fs: {
       exists: async (path: string) => files.has(path) || [...files.keys()].some((file) => file.startsWith(path.replace(/\/$/, '') + '/')),
@@ -166,7 +176,8 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
     const text = files.get('/fixture-home/t/.local/state/effort-live-control/decisions.sess1.jsonl') ?? '';
     return text.split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as Record<string, any>);
   };
-  return { state, statuses, touch, step, mainStep, prompt, completeMain, spawn, spawned, complete, tool, sessionStart, describeTool, fireTimers, tick, logs, timers, files, judgeCalls, registered, rows };
+  const sessionEnd = async () => { if (hooks.has('session.end')) await hooks.get('session.end')!($, {}, async () => ({})); };
+  return { $, state, statuses, touch, step, mainStep, prompt, completeMain, spawn, spawned, complete, tool, sessionStart, sessionEnd, describeTool, fireTimers, tick, logs, timers, files, judgeCalls, registered, rows };
 }
 
 suite('agent.spawn', () => {
@@ -1614,5 +1625,98 @@ suite('main chat: the modes', () => {
     const { x } = withReader();
     await x.spawned('[effort: low]\nMap X.', 'a1');
     expect(await x.step('a1', 'high')).toBe('low');
+  });
+});
+
+suite('plugin log adapter', () => {
+  const exec = promisify(execFile);
+  const dirs: string[] = [];
+  const fresh = async () => { const dir = await mkdtemp(join(tmpdir(), 'effort-plugin-log-')); dirs.push(dir); return dir; };
+  afterEach(async () => { vi.restoreAllMocks(); await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
+  const realRun: NonNullable<Opts['run']> = async (argv, init) => {
+    try { const result = await exec('/bin/sh', argv.slice(1), { timeout: init?.timeoutMs }); return { exitCode: 0, ...result }; }
+    catch (error: any) { return { exitCode: error.code ?? 1, stdout: error.stdout ?? '', stderr: error.stderr ?? String(error) }; }
+  };
+  const readRows = async (dir: string, file: string) => {
+    let text: string;
+    try { text = await readFile(join(dir, file), 'utf8'); }
+    catch (error: any) { if (error.code === 'ENOENT') return []; throw error; }
+    return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  };
+
+  it.each(['PLUGIN_LOG_DIR', 'fallback'])('writes forced error, warning and one heartbeat through %s without changing answers', async (source) => {
+    const dir = await fresh();
+    const x = engine(undefined, { env: { HOME: dir, PLUGIN_LOG_DIR: source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels') : undefined }, run: realRun, options: { mainChat: 'tripwires', floor: 'invalid', logFile: '' } });
+    await x.sessionStart(); await x.sessionStart();
+    expect(await x.mainStep('medium')).toBe('medium');
+    vi.spyOn(Controller.prototype, 'onButton').mockImplementation(() => { throw new Error('unknown level'); });
+    const result = await x.tool(undefined, 'mcp__effort-live-control__effort_up', {});
+    expect(result.out.result).toBe('Nothing changed: unknown level');
+    expect(result.called).toBe(false);
+    await x.sessionEnd();
+    const target = source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels/effort-live-control') : join(dir, '.local/state/effort-live-control/logs');
+    expect(await readRows(target, 'errors.jsonl')).toEqual([expect.objectContaining({ ts: '2026-10-14T15:20:31.123Z', plugin: 'effort-live-control', level: 'error', event: 'answer-tool-failed', where: 'hooks/effort-live-control.ts#answerButton', session: 'sess1' })]);
+    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ level: 'warning', event: 'option-error', where: 'hooks/effort-live-control.ts#start' }));
+    expect(await readRows(target, 'info.jsonl')).toEqual([expect.objectContaining({ level: 'info', event: 'logger-ready', detail: { version: '0.3.0', dir_source: source } })]);
+    expect(x.logs).toContain('effort-live-control: answering mcp__effort-live-control__effort_up failed: unknown level; nothing changed');
+  });
+
+  it('reports one process rejection per failing streak, then rearms after a successful real write', async () => {
+    const dir = await fresh();
+    let broken = true;
+    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, options: { mainChat: 'tripwires', logFile: '' }, run: async (argv, init) => { if (broken) throw new Error('spawn denied'); return realRun(argv, init); } });
+    await x.sessionStart(); await x.sessionEnd();
+    vi.spyOn(Controller.prototype, 'onButton').mockImplementation(() => { throw new Error('unknown level'); });
+    await x.mainStep('medium');
+    await x.tool(undefined, 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
+    const notices = () => x.logs.filter((line) => line.includes('plugin log'));
+    expect(notices()).toHaveLength(1); expect(notices()[0]).toContain(join(dir, 'effort-live-control')); expect(notices()[0]).toContain('spawn denied');
+    broken = false;
+    await x.tool(undefined, 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
+    expect(await readRows(join(dir, 'effort-live-control'), 'errors.jsonl')).toHaveLength(1);
+    broken = true;
+    await x.tool(undefined, 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
+    expect(notices()).toHaveLength(2);
+  });
+
+  it.each(['no-process', 'no-home'])('keeps work unchanged and gives visible logger fallback for %s', async (mode) => {
+    const dir = await fresh();
+    const x = engine(undefined, { env: mode === 'no-home' ? { HOME: undefined, PLUGIN_LOG_DIR: undefined } : { PLUGIN_LOG_DIR: dir }, noProcess: mode === 'no-process', options: { logFile: '', mainChat: 'tripwires', casebookFile: '' } });
+    await x.sessionStart(); expect(await x.mainStep('medium')).toBe('medium'); await x.sessionEnd();
+    const notice = x.logs.filter((line) => line.includes('plugin log'));
+    expect(notice).toHaveLength(1);
+    expect(notice[0]).toContain(mode === 'no-home' ? 'plugin log off: no PLUGIN_LOG_DIR and no HOME' : join(dir, 'effort-live-control'));
+    if (mode === 'no-process') expect(notice[0]).toContain('process');
+  });
+
+  it.each(['HOME', 'PLUGIN_LOG_DIR'])('does not render a rejected %s read as ordinary absence', async (name) => {
+    const dir = await fresh();
+    const env: Record<string, string | undefined> = { HOME: dir, PLUGIN_LOG_DIR: join(dir, 'levels') };
+    const x = engine(undefined, { env, run: realRun, options: { logFile: '', casebookFile: '' } });
+    x.$.env.get = async (key) => { if (key === name) throw undefined; return env[key]; };
+    await x.sessionStart(); await x.sessionEnd();
+    const target = name === 'HOME' ? join(dir, 'levels/effort-live-control') : join(dir, '.local/state/effort-live-control/logs');
+    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: name === 'HOME' ? 'home-missing' : 'plugin-log-dir-unreadable', msg: expect.stringContaining('failed: undefined') }));
+    expect(await readRows(target, 'info.jsonl')).toContainEqual(expect.objectContaining({ event: 'logger-ready' }));
+  });
+
+  it('logs unreadable pins, judge fallback and actual effort changes without decision packets', async () => {
+    const dir = await fresh();
+    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, options: { mainChat: 'tripwires', judge: true, logFile: '', logPackets: true } });
+    await x.sessionStart();
+    x.$.state.get = async () => { throw new Error('pin store offline'); };
+    expect(await x.step('unknown', 'medium')).toBe('medium');
+    await x.mainStep('medium');
+    await x.tool(undefined, 'Bash', { command: 'npm test', tool_input: { command: 'npm test' } }, { text: 'private test body', isError: true });
+    expect(x.judgeCalls).toHaveLength(1);
+    x.judgeCalls[0]!.resolve({ isAnswered: false, reason: 'aborted' });
+    await x.tick(); await x.sessionEnd();
+    const target = join(dir, 'effort-live-control');
+    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: 'pin-unreadable', level: 'warning' }));
+    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: 'judge-failed', level: 'warning', where: 'src/control.ts#failed' }));
+    expect(await readRows(target, 'info.jsonl')).toContainEqual(expect.objectContaining({ event: 'effort-steered', detail: { agent: 'main', from: 'medium', to: 'high' } }));
+    const text = JSON.stringify(await readRows(target, 'warnings.jsonl'));
+    expect(text).not.toContain('private test body');
+    expect(await x.mainStep('medium')).toBe('high'); await x.sessionEnd();
   });
 });
