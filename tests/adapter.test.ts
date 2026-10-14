@@ -1657,7 +1657,7 @@ suite('plugin log adapter', () => {
     const target = source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels/effort-live-control') : join(dir, '.local/state/effort-live-control/logs');
     expect(await readRows(target, 'errors.jsonl')).toEqual([expect.objectContaining({ ts: '2026-10-14T15:20:31.123Z', plugin: 'effort-live-control', level: 'error', event: 'answer-tool-failed', where: 'hooks/effort-live-control.ts#answerButton', session: 'sess1' })]);
     expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ level: 'warning', event: 'option-error', where: 'hooks/effort-live-control.ts#start' }));
-    expect(await readRows(target, 'info.jsonl')).toEqual([expect.objectContaining({ level: 'info', event: 'logger-ready', detail: { version: '0.3.0', dir_source: source } })]);
+    expect(await readRows(target, 'info.jsonl')).toEqual([expect.objectContaining({ level: 'info', event: 'logger-ready', detail: { version: '0.3.1', dir_source: source } })]);
     expect(x.logs).toContain('effort-live-control: answering mcp__effort-live-control__effort_up failed: unknown level; nothing changed');
   });
 

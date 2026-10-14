@@ -16,7 +16,7 @@ const fields = { plugin, level: 'error', event: 'answer-tool-failed', msg: 'Noth
 const writer = () => log!;
 const temp = async () => { const dir = await mkdtemp(join(tmpdir(), 'plugin-log-')); dirs.push(dir); return dir; };
 afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
-const run = async (argv: readonly string[], identity?: { uid: number; gid: number }) => {
+const run = async (argv: readonly string[], identity?: { uid?: number; gid?: number; cwd?: string; env?: NodeJS.ProcessEnv }) => {
   try { const out = await exec('/bin/sh', argv.slice(1), { ...identity, encoding: 'utf8' }); return { exitCode: 0, ...out }; }
   catch (error: any) { return { exitCode: error.code ?? 1, stdout: error.stdout ?? '', stderr: error.stderr ?? String(error) }; }
 };
@@ -60,6 +60,82 @@ it('APPEND_SCRIPT appends exact rows to three private files, quoting paths and c
     expect((await stat(join(dir, file))).mode & 0o777).toBe(0o600);
   }
   expect((await stat(dir)).mode & 0o777).toBe(0o700);
+});
+
+it.each(['absolute', 'hyphen-relative'].flatMap((root) => ['new', 'existing', 'capped'].map((state) => ({ root, state }))))('APPEND_SCRIPT writes private rows with BSD chmod ($root, $state)', async ({ root, state }) => {
+  const { pluginLogDir, levelRow, appendArgv } = writer();
+  const cwd = await temp();
+  const bin = join(cwd, 'bin');
+  const calls = join(cwd, 'chmod-calls');
+  await mkdir(bin);
+  const shim = join(bin, 'chmod');
+  await writeFile(shim, `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$CHMOD_CALLS"
+case "$1" in 600|700) ;; *) printf 'chmod: unsupported mode %s\\n' "$1" >&2; exit 1 ;; esac
+mode=$1
+shift
+for path do
+  case "$path" in -*) printf 'chmod: %s: No such file or directory\\n' "$path" >&2; exit 1 ;; esac
+done
+exec /bin/chmod "$mode" "$@"
+`);
+  await chmod(shim, 0o755);
+  const configured = root === 'absolute' ? join(cwd, "logs with 'quotes;$(false)") : '-logs';
+  const dir = pluginLogDir(configured, undefined, plugin)!;
+  const target = root === 'absolute' ? dir : join(cwd, dir);
+  const levels = [
+    { level: 'error', file: 'errors.jsonl' },
+    { level: 'warning', file: 'warnings.jsonl' },
+    { level: 'info', file: 'info.jsonl' },
+  ] as const;
+  const seed = (level: string) => state === 'capped' && level !== 'info' ? level.charAt(0).repeat(20971521) : `seed ${level}\n`;
+  if (state !== 'new') {
+    await mkdir(target, { recursive: true });
+    await chmod(target, 0o755);
+    for (const { level, file } of levels) {
+      await writeFile(join(target, file), seed(level));
+      await writeFile(join(target, file + '.1'), `backup ${level}\n`);
+      await chmod(join(target, file), 0o644);
+      await chmod(join(target, file + '.1'), 0o644);
+    }
+  }
+  const session = 'bsd-session';
+  const lines = levels.map(({ level }) => levelRow({ ...fields, level, session }, now));
+  for (const argv of appendArgv(dir, plugin, lines)) {
+    const out = await run(argv, { cwd, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, CHMOD_CALLS: calls } });
+    expect(out).toMatchObject({ exitCode: 0, stderr: '' });
+  }
+  expect((await readFile(calls, 'utf8')).split('\n')[0]).toBe(`700 ${root === 'absolute' ? dir : './' + dir}`);
+  expect((await stat(target)).mode & 0o777).toBe(0o700);
+  for (const [i, { level, file }] of levels.entries()) {
+    const path = join(target, file);
+    const content = await readFile(path, 'utf8');
+    if (state === 'capped' && level === 'warning') {
+      expect(content.endsWith(lines[i])).toBe(true);
+      const capLines = content.slice(0, -lines[i].length).trim().split('\n');
+      expect(capLines).toHaveLength(2);
+      for (const line of capLines) {
+        expect(JSON.parse(line)).toEqual({
+          ts: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.000Z$/),
+          plugin, level: 'warning', event: 'log-capped',
+          msg: 'level file exceeded 20971520 bytes; moved to .1',
+          where: 'src/plugin-log.ts#APPEND_SCRIPT', session,
+        });
+      }
+    } else {
+      const prefix = state === 'new' || (state === 'capped' && level === 'error') ? '' : seed(level);
+      expect(content).toBe(prefix + lines[i]);
+    }
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    if (state !== 'new') {
+      const backup = path + '.1';
+      const expected = state === 'capped' && level !== 'info' ? seed(level) : `backup ${level}\n`;
+      expect(await readFile(backup, 'utf8')).toBe(expected);
+      expect((await stat(backup)).size).toBe(Buffer.byteLength(expected));
+      expect((await stat(backup)).mode & 0o777).toBe(0o600);
+    }
+  }
 });
 
 it('APPEND_SCRIPT moves a capped file aside and writes a contract log-capped warning', async () => {

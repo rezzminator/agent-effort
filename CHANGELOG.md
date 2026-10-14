@@ -2,6 +2,11 @@
 
 Every release of effort-live-control (named agent-effort through 0.1.3). Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `effort-live-control--v<version>` (`agent-effort--v<version>` through 0.1.3), with a GitHub release carrying the section below.
 
+## [0.3.1] — 2026-10-15
+
+### Fixed
+- Plugin log writes support BSD chmod on macOS, including hyphen-leading relative log roots. Existing levels and backups retain private modes through cap rotation.
+
 ## [0.3.0] — 2026-10-14
 
 ### Added

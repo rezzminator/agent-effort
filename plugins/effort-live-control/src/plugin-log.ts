@@ -52,17 +52,18 @@ export function levelRow(fields: RowFields, nowMs: number): string {
 export const APPEND_SCRIPT = `set -eu
 umask 077
 dir=$1
+case "$dir" in -*) dir=./$dir ;; esac
 plugin=$2
 shift 2
 [ ! -L "$dir" ] || { printf 'plugin log %s: directory is a symlink\\n' "$dir" >&2; exit 1; }
 mkdir -p -- "$dir" || { printf 'plugin log %s: mkdir failed\\n' "$dir" >&2; exit 1; }
 [ -w "$dir" ] && [ -x "$dir" ] || { printf 'plugin log %s: directory is not writable/searchable\\n' "$dir" >&2; exit 1; }
-chmod 700 -- "$dir" || { printf 'plugin log %s: chmod failed\\n' "$dir" >&2; exit 1; }
+chmod 700 "$dir" || { printf 'plugin log %s: chmod failed\\n' "$dir" >&2; exit 1; }
 secure_file() {
   [ ! -L "$1" ] || { printf 'plugin log %s: level file is a symlink\\n' "$1" >&2; exit 1; }
   if [ -e "$1" ]; then
     [ -f "$1" ] && [ -w "$1" ] || { printf 'plugin log %s: level file is not regular/writable\\n' "$1" >&2; exit 1; }
-    chmod 600 -- "$1" || { printf 'plugin log %s: chmod failed\\n' "$1" >&2; exit 1; }
+    chmod 600 "$1" || { printf 'plugin log %s: chmod failed\\n' "$1" >&2; exit 1; }
   fi
 }
 append_line() {

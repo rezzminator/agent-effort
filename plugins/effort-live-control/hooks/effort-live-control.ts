@@ -619,7 +619,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     await start(rt, $);
     if (!rt.pluginReady) {
       rt.pluginReady = true;
-      plog(rt, $, 'info', 'logger-ready', 'effort-live-control: plugin logger ready', 'hooks/effort-live-control.ts#session.start', { version: '0.3.0', dir_source: rt.pluginSource });
+      plog(rt, $, 'info', 'logger-ready', 'effort-live-control: plugin logger ready', 'hooks/effort-live-control.ts#session.start', { version: '0.3.1', dir_source: rt.pluginSource });
     }
     await registerButtons(rt, $);
     return result;
