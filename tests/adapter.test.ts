@@ -21,6 +21,10 @@ function deferred<T>() {
 type Opts = {
   /** Files the stand-in file system holds: absolute path → text. */
   files?: Record<string, string>;
+  /** A write lands only after a timer turn, as a real disk write does: what is not awaited is not on disk. */
+  slowWrite?: boolean;
+  /** The screen door throws, as an engine without a UI may. */
+  uiThrows?: boolean;
   options?: Record<string, unknown>;
   env?: Record<string, string | undefined>;
   run?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
@@ -63,7 +67,7 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
           signal?.addEventListener('abort', cancel, { once: true });
         }),
     },
-    ui: { log: (line: string) => logs.push(line) },
+    ui: { log: (line: string) => { if (opts.uiThrows) throw new Error('no screen'); logs.push(line); } },
     ...(opts.noProcess ? {} : { process: { run: opts.run ?? (async () => ({ exitCode: 0, stdout: '', stderr: '' })) } }),
     agent: { list: async () => [...statuses].map(([id, status]) => ({ id, status, type: 'general-purpose', description: '' })) },
     fs: {
@@ -74,7 +78,10 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
         if (text === undefined) throw new Error('ENOENT');
         return text;
       },
-      write: async (path: string, text: string) => void (files.set(path, text), mtimes.set(path, (mtimes.get(path) ?? 0) + 1)),
+      write: async (path: string, text: string) => {
+        if (opts.slowWrite) await new Promise((resolve) => setTimeout(resolve, 5));
+        files.set(path, text); mtimes.set(path, (mtimes.get(path) ?? 0) + 1);
+      },
       stat: async (path: string) => {
         if (!files.has(path)) throw new Error(`ENOENT: no such file or directory, stat '${path}'`);
         return { kind: 'file', size: 0, mtimeMs: mtimes.get(path) ?? 0, isLink: false };
@@ -176,7 +183,7 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
     const text = files.get('/fixture-home/t/.local/state/effort-live-control/decisions.sess1.jsonl') ?? '';
     return text.split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as Record<string, any>);
   };
-  const sessionEnd = async () => { if (hooks.has('session.end')) await hooks.get('session.end')!($, {}, async () => ({})); };
+  const sessionEnd = async (next = async () => ({})) => { if (hooks.has('session.end')) await hooks.get('session.end')!($, {}, next); };
   return { $, state, statuses, touch, step, mainStep, prompt, completeMain, spawn, spawned, complete, tool, sessionStart, sessionEnd, describeTool, fireTimers, tick, logs, timers, files, judgeCalls, registered, rows };
 }
 
@@ -1761,6 +1768,27 @@ suite('plugin log adapter', () => {
     broken = true;
     await x.tool(undefined, 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
     expect(notices()).toHaveLength(2);
+  });
+
+  it('a failing plugin-log write also reaches the decision log, once per failing streak', async () => {
+    // The invalid floor's option-error warning is the level-log write that fails.
+    const x = engine(undefined, { slowWrite: true, env: { PLUGIN_LOG_DIR: '/fixture-logs' }, options: { floor: 'invalid', logFile: '/fixture-home/t/elc.jsonl' }, run: async () => ({ exitCode: 1, stdout: '', stderr: 'chmod: --: No such file or directory' }) });
+    await x.sessionStart(); await x.sessionEnd();
+    // No tick after session.end: the row the final flush queues is on disk when the session ends.
+    const text = x.files.get('/fixture-home/t/elc.sess1.jsonl') ?? '';
+    const failed = text.split('\n').filter(Boolean).map((line) => JSON.parse(line)).filter((row) => row.event === 'plugin-log-failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].error).toContain('chmod: --: No such file or directory');
+    expect(x.logs.filter((line) => line.includes('plugin log'))).toHaveLength(1);
+  });
+
+  it('session.end still ends when the decision-log write fails and the screen door throws', async () => {
+    const path = '/fixture-home/t/elc.sess1.jsonl';
+    const x = engine(undefined, { uiThrows: true, broken: [path], files: { [path]: '' }, env: { PLUGIN_LOG_DIR: '/fixture-logs' }, options: { logFile: '/fixture-home/t/elc.jsonl' } });
+    await x.sessionStart();
+    let ended = false;
+    await x.sessionEnd(async () => { ended = true; return {}; });
+    expect(ended).toBe(true);
   });
 
   it.each(['no-process', 'no-home'])('keeps work unchanged and gives visible logger fallback for %s', async (mode) => {

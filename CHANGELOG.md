@@ -2,6 +2,11 @@
 
 Every release of effort-live-control (named agent-effort through 0.1.3). Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `effort-live-control--v<version>` (`agent-effort--v<version>` through 0.1.3), with a GitHub release carrying the section below.
 
+## [Unreleased]
+
+### Fixed
+- A failed plugin-log write also reaches the decision log (event `plugin-log-failed`, once per failing streak), not only the screen.
+
 ## [0.3.2] — 2026-10-15
 
 ### Fixed
