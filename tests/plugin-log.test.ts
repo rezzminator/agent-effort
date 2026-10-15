@@ -62,6 +62,40 @@ it('APPEND_SCRIPT appends exact rows to three private files, quoting paths and c
   expect((await stat(dir)).mode & 0o777).toBe(0o700);
 });
 
+
+// macOS /bin/chmod reads `--` as a file name ("chmod: --: No such file or directory") and
+// GNU chmod accepts it, so a Linux-only suite let the script fail on every Mac. This shim is
+// the BSD behaviour on any OS: an operand `--` fails, anything else reaches the real chmod.
+const bsdChmodPath = async function() {
+  const bin = await temp();
+  const shim = join(bin, 'chmod');
+  await writeFile(shim, '#!/bin/sh\nfor a in "$@"; do [ "$a" = -- ] && { echo "chmod: --: No such file or directory" >&2; exit 1; }; done\nexec /bin/chmod "$@"\n', { mode: 0o755 });
+  return `${bin}:${process.env.PATH}`;
+};
+
+it('APPEND_SCRIPT writes under a BSD-style chmod that rejects the -- operand', async () => {
+  const { levelRow, appendArgv } = writer();
+  const PATH = await bsdChmodPath();
+  const dir = join(await temp(), 'logs');
+  const lines = ['error', 'warning', 'info'].map((level) => levelRow({ ...fields, level }, now));
+  for (const argv of appendArgv(dir, plugin, lines)) await exec('/bin/sh', argv.slice(1), { env: { ...process.env, PATH } });
+  for (const [i, file] of ['errors.jsonl', 'warnings.jsonl', 'info.jsonl'].entries()) expect(await readFile(join(dir, file), 'utf8')).toBe(lines[i]);
+  // a second pass chmods the now existing level files too
+  for (const argv of appendArgv(dir, plugin, lines)) await exec('/bin/sh', argv.slice(1), { env: { ...process.env, PATH } });
+  expect(await readFile(join(dir, 'errors.jsonl'), 'utf8')).toBe(lines[0] + lines[0]);
+  expect((await stat(join(dir, 'errors.jsonl'))).mode & 0o777).toBe(0o600);
+  expect((await stat(dir)).mode & 0o777).toBe(0o700);
+});
+
+it('APPEND_SCRIPT takes a relative log directory that starts with a dash as a path, not a chmod option', async () => {
+  const { levelRow, appendArgv } = writer();
+  const PATH = await bsdChmodPath();
+  const cwd = await temp();
+  const lines = [levelRow(fields, now)];
+  for (const argv of appendArgv('-logs', plugin, lines)) await exec('/bin/sh', argv.slice(1), { cwd, env: { ...process.env, PATH } });
+  expect(await readFile(join(cwd, '-logs', 'errors.jsonl'), 'utf8')).toBe(lines[0]);
+});
+
 it('APPEND_SCRIPT moves a capped file aside and writes a contract log-capped warning', async () => {
   const { levelRow, appendArgv, PLUGIN_LOG_CAP_BYTES } = writer();
   const dir = await temp();

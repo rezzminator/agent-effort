@@ -2,6 +2,12 @@
 
 Every release of effort-live-control (named agent-effort through 0.1.3). Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `effort-live-control--v<version>` (`agent-effort--v<version>` through 0.1.3), with a GitHub release carrying the section below.
 
+## [Unreleased]
+
+### Fixed
+- The plugin level log now writes on macOS: its append script no longer passes `--` to `chmod`, which BSD `chmod` reads as a file name and fails on under `set -eu`, so every flush was dropped. A log directory that starts with a dash is handled as a `./` path instead. The regression tests run the script behind a BSD-style `chmod` shim, so the Linux suite catches it too.
+- A failed plugin-log write also reaches the decision log (event `plugin-log-failed`, once per failing streak), not only the screen.
+
 ## [0.3.0] — 2026-10-14
 
 ### Added
