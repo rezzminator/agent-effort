@@ -1350,6 +1350,74 @@ suite('main chat: the prompt reader', () => {
     expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'reader-timeout', agent: 'main', casebook: 36, casebookSource: 'bundled', precedents: 0 }));
   });
 
+  it.each([
+    { name: 'default denial recovers on the current model', options: {}, status: 403, error: 'oauth_org_not_allowed', denied: false, models: ['haiku', OPUS, OPUS], effort: 'high', disabled: false },
+    { name: 'both routes denied degrades once', options: {}, status: 403, error: 'oauth_org_not_allowed', denied: true, models: ['haiku', OPUS], effort: 'medium', disabled: true },
+    { name: 'explicit nondefault model is preserved', options: { promptModel: 'sonnet' }, status: 403, error: 'oauth_org_not_allowed', denied: true, models: ['sonnet', 'sonnet'], effort: 'medium', disabled: false },
+    { name: 'transient failure does not change route', options: {}, status: 529, error: 'overloaded', denied: false, models: ['haiku', 'haiku'], effort: 'medium', disabled: false },
+    { name: 'other 403 does not change route', options: {}, status: 403, error: 'permission_denied', denied: false, models: ['haiku', 'haiku'], effort: 'medium', disabled: false },
+    { name: 'same error at 401 does not change route', options: {}, status: 401, error: 'oauth_org_not_allowed', denied: false, models: ['haiku', 'haiku'], effort: 'medium', disabled: false },
+  ])('reader model route: $name', async ({ options, status, error, denied, models, effort, disabled }) => {
+    const { x, calls, script } = withReader(options);
+    script.next = () => calls.at(-1).model === OPUS && !denied
+      ? say('0.05 0.90 0.05')
+      : { isAnswered: false, reason: 'api-error', status, error, usage: USAGE };
+    await x.prompt('one');
+    expect(await x.mainStep('medium', 't1')).toBe(effort);
+    await x.completeMain('done', 't1');
+    await x.prompt('two');
+    expect(await x.mainStep('medium', 't2')).toBe(effort);
+    expect(calls.map((call) => call.model)).toEqual(models);
+    expect(x.logs.filter((line) => line.includes('model judgment unavailable for this session'))).toHaveLength(disabled ? 1 : 0);
+  });
+
+  it('keeps an explicit judge live after the default reader becomes unavailable', async () => {
+    const { x, calls, script } = withReader({ judge: true, judgeModel: 'sonnet' }, { files: LEAD });
+    script.next = () => calls.at(-1).model === 'sonnet'
+      ? say('90 - stuck')
+      : { isAnswered: false, reason: 'api-error', status: 403, error: 'oauth_org_not_allowed', usage: USAGE };
+    await x.prompt('one');
+    expect(await x.mainStep('medium')).toBe('medium');
+    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
+    await x.tool('L1', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    await x.tick();
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'judge', p: 90 }));
+    expect(calls.map((call) => call.model)).toEqual(['haiku', OPUS, 'sonnet']);
+    expect(x.logs.filter((line) => line.includes('model judgment unavailable for this session'))).toHaveLength(1);
+  });
+
+  it.each([{ denied: false, judgeFirst: false, concurrent: false }, { denied: true, judgeFirst: false, concurrent: false }, { denied: false, judgeFirst: true, concurrent: false }, { denied: true, judgeFirst: true, concurrent: false }, { denied: false, judgeFirst: false, concurrent: true }])('reader and judge share the default fallback (denied=$denied, judgeFirst=$judgeFirst, concurrent=$concurrent)', async ({ denied, judgeFirst, concurrent }) => {
+    const { x, calls, script } = withReader({ judge: true }, { files: LEAD });
+    const pending = [deferred<unknown>(), deferred<unknown>()];
+    const refusal = { isAnswered: false, reason: 'api-error', status: 403, error: 'oauth_org_not_allowed', usage: USAGE };
+    script.next = () => concurrent && calls.at(-1).model === 'haiku'
+      ? pending[calls.length - 1]!.promise
+      : calls.at(-1).model === OPUS && !denied
+      ? say(calls.at(-1).system ? '90 - stuck' : '0.05 0.90 0.05')
+      : { isAnswered: false, reason: 'api-error', status: 403, error: 'oauth_org_not_allowed', usage: USAGE };
+    const prompt = !judgeFirst ? x.prompt('one') : undefined;
+    if (concurrent) await x.tick();
+    else await prompt;
+    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
+    await x.tool('L1', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    if (concurrent) {
+      expect(calls.map((call) => call.model)).toEqual(['haiku', 'haiku']);
+      pending[0]!.resolve(refusal);
+      await prompt;
+      expect(calls.map((call) => call.model)).toEqual(['haiku', 'haiku', OPUS]);
+      pending[1]!.resolve(refusal);
+    }
+    await x.tick();
+    if (judgeFirst) await x.prompt('one');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(calls.map((call) => call.model)).toEqual(concurrent ? ['haiku', 'haiku', OPUS, OPUS] : denied ? ['haiku', OPUS] : ['haiku', OPUS, OPUS]);
+    expect(await x.rows()).toContainEqual(expect.objectContaining(denied
+      ? { event: 'judge-failed', reason: 'model-unavailable' }
+      : { event: 'judge', p: 90 }));
+    expect(x.logs.filter((line) => line.includes('model judgment unavailable for this session'))).toHaveLength(denied ? 1 : 0);
+  });
+
   it('main chat: an API error and a throw send the requested level, with a reader-failed row carrying the error', async () => {
     const { x, script } = withReader();
     script.next = () => ({ isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: USAGE });

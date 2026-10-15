@@ -1,4 +1,4 @@
-import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
+import type { EngineInterface, ModelCompleteRequest, ModelCompleteResult, On, PluginOptions, Register } from 'claude-code';
 import { Definitions, type ControlConfig, type Definition } from '../src/agents.ts';
 import { Controller, type Action } from '../src/control.ts';
 import { describe, denyText, EMPTY_TEXT, isStillRunning, parseTag, stepEffort, stripTag, type Effort, type Pin } from '../src/effort.ts';
@@ -117,6 +117,8 @@ type Runtime = {
   pluginQueue?: PluginLogQueue;
   pluginWriting: Promise<void>;
   pluginFlushing: Promise<void>;
+  modelFallback?: string;
+  modelUnavailable?: boolean;
   config: Settings;
   compiled: Compiled;
   optionErrors: string[];
@@ -342,7 +344,7 @@ function perform(rt: Runtime, $: EngineInterface, controller: Controller, action
   for (const action of actions) {
     if (action.kind === 'log') {
       const { event, ...rest } = action.row;
-      if (event === 'judge-failed') plog(rt, $, 'warning', 'judge-failed', `effort-live-control: judge failed for ${controller.id}: ${String(rest.reason)}; effort ${String(rest.from)} -> ${String(rest.to)}`, 'src/control.ts#failed', { agent: controller.id, error: String(rest.reason) });
+      if (event === 'judge-failed' && rest.reason !== 'model-unavailable') plog(rt, $, 'warning', 'judge-failed', `effort-live-control: judge failed for ${controller.id}: ${String(rest.reason)}; effort ${String(rest.from)} -> ${String(rest.to)}`, 'src/control.ts#failed', { agent: controller.id, error: String(rest.reason) });
       if (rest.from !== undefined && rest.to !== undefined && rest.from !== rest.to) plog(rt, $, 'info', 'effort-steered', `effort-live-control: ${controller.id}'s effort changed from ${String(rest.from)} to ${String(rest.to)}`, 'hooks/effort-live-control.ts#perform', { agent: controller.id, from: rest.from, to: rest.to });
       record(rt, $, controller.id, controller.type, { event, ...rest, ...(rt.config.logPackets ? action.detail : {}) });
     } else {
@@ -351,19 +353,48 @@ function perform(rt: Runtime, $: EngineInterface, controller: Controller, action
   }
 }
 
+function oauthDenied(reply: ModelCompleteResult): boolean {
+  return !reply.isAnswered && reply.reason === 'api-error' && reply.status === 403 && reply.error === 'oauth_org_not_allowed';
+}
+
+// Only the default model may switch: explicit model choices remain authoritative.
+async function completeModel(rt: Runtime, $: EngineInterface, request: ModelCompleteRequest): Promise<ModelCompleteResult | undefined> {
+  if (request.model !== 'haiku') return $.model.complete(request);
+  if (rt.modelUnavailable) return undefined;
+  const sentModel = rt.modelFallback ?? request.model;
+  let reply = await $.model.complete({ ...request, model: sentModel });
+  if (oauthDenied(reply) && sentModel === request.model) {
+    const current = rt.modelFallback ?? await $.session.model();
+    if (rt.modelFallback === undefined) {
+      rt.modelFallback = current;
+      plog(rt, $, 'warning', 'model-fallback', `effort-live-control: default haiku refused (api-error 403 oauth_org_not_allowed); using current main model ${current} for the default reader and judge`, 'hooks/effort-live-control.ts#completeModel', { model: current });
+    }
+    if (rt.modelFallback !== request.model) reply = await $.model.complete({ ...request, model: rt.modelFallback });
+  }
+  if (oauthDenied(reply)) {
+    if (!rt.modelUnavailable) {
+      rt.modelUnavailable = true;
+      notice(rt, $, 'warning', 'model-unavailable', 'effort-live-control: model judgment unavailable for this session (api-error 403 oauth_org_not_allowed); prompts use requested effort and judges use deterministic failure handling', 'completeModel');
+    }
+    return undefined;
+  }
+  return reply;
+}
+
 // One judge call, never awaited by a hook: no request waits for it. Whatever it
 // comes back with is read by the controller, which raises one step when it gives no level.
 function runJudge(rt: Runtime, $: EngineInterface, controller: Controller, action: Extract<Action, { kind: 'judge' }>): void {
   const started = Date.now();
-  $.model
-    .complete({ model: rt.config.judgeModel, effort: rt.config.judgeEffort, system: JUDGE_SYSTEM, prompt: action.packet, maxTokens: JUDGE_MAX_TOKENS, timeoutMs: rt.config.judgeTimeoutMs })
+  completeModel(rt, $, { model: rt.config.judgeModel, effort: rt.config.judgeEffort, system: JUDGE_SYSTEM, prompt: action.packet, maxTokens: JUDGE_MAX_TOKENS, timeoutMs: rt.config.judgeTimeoutMs })
     .then(
       (reply) => {
         if (controllerById(rt, controller.id) !== controller) return;
         const ms = Date.now() - started;
-        const out = reply.isAnswered
-          ? controller.onJudgeAnswer(action.epoch, reply.text, ms, reply.usage)
-          : controller.onJudgeFailure(action.epoch, reply.reason === 'api-error' ? `api-error ${reply.status ?? 'no status'} ${reply.error}` : reply.reason, reply.usage);
+        const out = reply === undefined
+          ? controller.onJudgeFailure(action.epoch, 'model-unavailable')
+          : reply.isAnswered
+            ? controller.onJudgeAnswer(action.epoch, reply.text, ms, reply.usage)
+            : controller.onJudgeFailure(action.epoch, reply.reason === 'api-error' ? `api-error ${reply.status ?? 'no status'} ${reply.error}` : reply.reason, reply.usage);
         perform(rt, $, controller, out.actions);
       },
       (error: unknown) => {
@@ -537,12 +568,13 @@ async function readPrompt(rt: Runtime, $: EngineInterface, text: string): Promis
   const started = Date.now();
   let reply;
   try {
-    reply = await $.model.complete({ model: rt.config.promptModel, effort: rt.config.promptEffort, prompt: built.prompt, maxTokens: READER_MAX_TOKENS, timeoutMs: rt.config.promptTimeoutMs });
+    reply = await completeModel(rt, $, { model: rt.config.promptModel, effort: rt.config.promptEffort, prompt: built.prompt, maxTokens: READER_MAX_TOKENS, timeoutMs: rt.config.promptTimeoutMs });
   } catch (error) {
     row({ event: 'reader-failed', error: `threw: ${message(error)}`, ms: Date.now() - started });
     return undefined;
   }
   const ms = Date.now() - started;
+  if (reply === undefined) return undefined;
   if (!reply.isAnswered) {
     if (reply.reason === 'aborted') row({ event: 'reader-timeout', ms });
     else if (reply.reason === 'api-error') row({ event: 'reader-failed', error: `api-error ${reply.status ?? 'no status'} ${reply.error}`, ms });
