@@ -1644,7 +1644,7 @@ suite('plugin log adapter', () => {
     return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   };
 
-  it.each(['PLUGIN_LOG_DIR', 'fallback'])('writes forced error, warning and one heartbeat through %s without changing answers', async (source) => {
+  it.each(['PLUGIN_LOG_DIR', 'fallback'])('writes forced error and warning through %s without changing answers', async (source) => {
     const dir = await fresh();
     const x = engine(undefined, { env: { HOME: dir, PLUGIN_LOG_DIR: source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels') : undefined }, run: realRun, options: { mainChat: 'tripwires', floor: 'invalid', logFile: '' } });
     await x.sessionStart(); await x.sessionStart();
@@ -1657,8 +1657,24 @@ suite('plugin log adapter', () => {
     const target = source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels/effort-live-control') : join(dir, '.local/state/effort-live-control/logs');
     expect(await readRows(target, 'errors.jsonl')).toEqual([expect.objectContaining({ ts: '2026-10-14T15:20:31.123Z', plugin: 'effort-live-control', level: 'error', event: 'answer-tool-failed', where: 'hooks/effort-live-control.ts#answerButton', session: 'sess1' })]);
     expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ level: 'warning', event: 'option-error', where: 'hooks/effort-live-control.ts#start' }));
-    expect(await readRows(target, 'info.jsonl')).toEqual([expect.objectContaining({ level: 'info', event: 'logger-ready', detail: { version: '0.3.1', dir_source: source } })]);
     expect(x.logs).toContain('effort-live-control: answering mcp__effort-live-control__effort_up failed: unknown level; nothing changed');
+  });
+
+  it.each([
+    { level: 'error', file: 'errors.jsonl', event: 'answer-tool-failed', component: 'answerButton', cause: 'unknown level' },
+    { level: 'warning', file: 'warnings.jsonl', event: 'pin-unreadable', component: 'readPin', cause: 'pin store offline' },
+  ])('queues $event before a throwing screen call', async ({ level, file, event, component, cause }) => {
+    const dir = await fresh();
+    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, options: { mainChat: 'tripwires', logFile: '', casebookFile: '' } });
+    await x.sessionStart(); await x.mainStep('medium');
+    x.$.ui.log = () => { throw new Error('screen offline'); };
+    if (level === 'error') vi.spyOn(Controller.prototype, 'onButton').mockImplementation(() => { throw new Error(cause); });
+    else x.$.state.get = async () => { throw new Error(cause); };
+    await expect(level === 'error' ? x.tool(undefined, 'mcp__effort-live-control__effort_up', {}) : x.step('unknown', 'medium')).rejects.toThrow('screen offline');
+    await x.sessionEnd();
+    expect(await readRows(join(dir, 'effort-live-control'), file)).toContainEqual(expect.objectContaining({
+      plugin: 'effort-live-control', level, event, where: `hooks/effort-live-control.ts#${component}`, session: 'sess1', msg: expect.stringContaining(cause),
+    }));
   });
 
   it('reports one process rejection per failing streak, then rearms after a successful real write', async () => {
@@ -1681,7 +1697,7 @@ suite('plugin log adapter', () => {
 
   it.each(['no-process', 'no-home'])('keeps work unchanged and gives visible logger fallback for %s', async (mode) => {
     const dir = await fresh();
-    const x = engine(undefined, { env: mode === 'no-home' ? { HOME: undefined, PLUGIN_LOG_DIR: undefined } : { PLUGIN_LOG_DIR: dir }, noProcess: mode === 'no-process', options: { logFile: '', mainChat: 'tripwires', casebookFile: '' } });
+    const x = engine(undefined, { env: mode === 'no-home' ? { HOME: undefined, PLUGIN_LOG_DIR: undefined } : { PLUGIN_LOG_DIR: dir }, noProcess: mode === 'no-process', options: { floor: 'invalid', logFile: '', mainChat: 'tripwires', casebookFile: '' } });
     await x.sessionStart(); expect(await x.mainStep('medium')).toBe('medium'); await x.sessionEnd();
     const notice = x.logs.filter((line) => line.includes('plugin log'));
     expect(notice).toHaveLength(1);
@@ -1697,7 +1713,6 @@ suite('plugin log adapter', () => {
     await x.sessionStart(); await x.sessionEnd();
     const target = name === 'HOME' ? join(dir, 'levels/effort-live-control') : join(dir, '.local/state/effort-live-control/logs');
     expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: name === 'HOME' ? 'home-missing' : 'plugin-log-dir-unreadable', msg: expect.stringContaining('failed: undefined') }));
-    expect(await readRows(target, 'info.jsonl')).toContainEqual(expect.objectContaining({ event: 'logger-ready' }));
   });
 
   it('logs unreadable pins, judge fallback and actual effort changes without decision packets', async () => {

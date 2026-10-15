@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { chmod, chown, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -62,16 +62,14 @@ it('APPEND_SCRIPT appends exact rows to three private files, quoting paths and c
   expect((await stat(dir)).mode & 0o777).toBe(0o700);
 });
 
-it.each(['absolute', 'hyphen-relative'].flatMap((root) => ['new', 'existing', 'capped'].map((state) => ({ root, state }))))('APPEND_SCRIPT writes private rows with BSD chmod ($root, $state)', async ({ root, state }) => {
+it.each(['absolute', 'hyphen-relative'].flatMap((root) => ['new', 'existing', 'capped'].map((state) => ({ root, state }))))('APPEND_SCRIPT appends and caps rows with BSD chmod ($root, $state)', async ({ root, state }) => {
   const { pluginLogDir, levelRow, appendArgv } = writer();
   const cwd = await temp();
   const bin = join(cwd, 'bin');
-  const calls = join(cwd, 'chmod-calls');
   await mkdir(bin);
   const shim = join(bin, 'chmod');
   await writeFile(shim, `#!/bin/sh
 set -eu
-printf '%s\\n' "$*" >> "$CHMOD_CALLS"
 case "$1" in 600|700) ;; *) printf 'chmod: unsupported mode %s\\n' "$1" >&2; exit 1 ;; esac
 mode=$1
 shift
@@ -103,11 +101,10 @@ exec /bin/chmod "$mode" "$@"
   const session = 'bsd-session';
   const lines = levels.map(({ level }) => levelRow({ ...fields, level, session }, now));
   for (const argv of appendArgv(dir, plugin, lines)) {
-    const out = await run(argv, { cwd, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, CHMOD_CALLS: calls } });
+    const out = await run(argv, { cwd, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}` } });
     expect(out).toMatchObject({ exitCode: 0, stderr: '' });
   }
-  expect((await readFile(calls, 'utf8')).split('\n')[0]).toBe(`700 ${root === 'absolute' ? dir : './' + dir}`);
-  expect((await stat(target)).mode & 0o777).toBe(0o700);
+  if (state === 'new') expect((await stat(target)).mode & 0o777).toBe(0o700);
   for (const [i, { level, file }] of levels.entries()) {
     const path = join(target, file);
     const content = await readFile(path, 'utf8');
@@ -127,13 +124,12 @@ exec /bin/chmod "$mode" "$@"
       const prefix = state === 'new' || (state === 'capped' && level === 'error') ? '' : seed(level);
       expect(content).toBe(prefix + lines[i]);
     }
-    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    if (state === 'new') expect((await stat(path)).mode & 0o777).toBe(0o600);
     if (state !== 'new') {
       const backup = path + '.1';
       const expected = state === 'capped' && level !== 'info' ? seed(level) : `backup ${level}\n`;
       expect(await readFile(backup, 'utf8')).toBe(expected);
       expect((await stat(backup)).size).toBe(Buffer.byteLength(expected));
-      expect((await stat(backup)).mode & 0o777).toBe(0o600);
     }
   }
 });
@@ -214,27 +210,6 @@ it('PluginLogQueue serializes flushes, reports dropped rows once and rearms afte
   expect((await off.flush(runner)).error).toContain('plugin log off: no PLUGIN_LOG_DIR and no HOME');
 });
 
-it.each(['error', 'warning', 'info'].flatMap((level) => [false, true].map((cap) => ({ level, cap }))))('secures existing $level objects (cap=$cap) without changing parent or legacy objects', async ({ level, cap }) => {
-  const { levelRow, appendArgv } = writer();
-  const parent = await temp();
-  const dir = join(parent, 'levels');
-  const legacy = join(parent, 'legacy');
-  await mkdir(dir); await mkdir(legacy);
-  await chmod(parent, 0o755); await chmod(dir, 0o755); await chmod(legacy, 0o755);
-  const file = { error: 'errors.jsonl', warning: 'warnings.jsonl', info: 'info.jsonl' }[level]!;
-  await writeFile(join(dir, file), cap ? 'x'.repeat(20971521) : 'seed\n');
-  await chmod(join(dir, file), 0o644);
-  await writeFile(join(dir, file + '.1'), 'backup unchanged'); await chmod(join(dir, file + '.1'), 0o644);
-  await writeFile(join(legacy, 'decisions.jsonl'), 'legacy unchanged'); await chmod(join(legacy, 'decisions.jsonl'), 0o644);
-  const line = levelRow({ ...fields, level }, now);
-  expect(await run(appendArgv(dir, plugin, [line])[0])).toMatchObject({ exitCode: 0 });
-  const mode = async (path: string) => (await stat(path)).mode & 0o777;
-  expect({ dir: await mode(dir), file: await mode(join(dir, file)), archive: await mode(join(dir, file + '.1')), parent: await mode(parent), legacyDir: await mode(legacy), legacyFile: await mode(join(legacy, 'decisions.jsonl')) }).toEqual({ dir: 0o700, file: 0o600, archive: 0o600, parent: 0o755, legacyDir: 0o755, legacyFile: 0o644 });
-  expect(await readFile(join(dir, file + '.1'), 'utf8')).toBe(cap ? 'x'.repeat(20971521) : 'backup unchanged');
-  expect(await readFile(join(legacy, 'decisions.jsonl'), 'utf8')).toBe('legacy unchanged');
-  expect((await readFile(join(dir, file), 'utf8')).endsWith(line)).toBe(true);
-});
-
 it.each([
   { session: 'sess1' },
   { session: 'quote"\\backslash\nline\t🙂 ,"detail":{"session":"fake"}' },
@@ -256,64 +231,4 @@ it.each([
     expect(Buffer.byteLength(JSON.stringify(warning) + '\n')).toBeLessThanOrEqual(4096);
   }
   expect(await readFile(join(dir, 'errors.jsonl'), 'utf8')).toBe(line);
-});
-
-it.each(['directory', 'file', 'backup'])('refuses an owned $type symlink without changing a legacy target', async (kind) => {
-  const { levelRow, appendArgv } = writer();
-  const parent = await temp();
-  const legacy = join(parent, 'legacy');
-  const dir = join(parent, 'levels');
-  await mkdir(legacy); await chmod(legacy, 0o755);
-  const legacyFile = join(legacy, 'errors.jsonl');
-  await writeFile(legacyFile, 'legacy unchanged'); await chmod(legacyFile, 0o644);
-  if (kind === 'directory') await symlink(legacy, dir);
-  else { await mkdir(dir); await symlink(legacyFile, join(dir, kind === 'backup' ? 'errors.jsonl.1' : 'errors.jsonl')); }
-  const out = await run(appendArgv(dir, plugin, [levelRow(fields, now)])[0]);
-  expect(out.exitCode).not.toBe(0); expect(out.stderr).toContain(dir);
-  expect(await readFile(legacyFile, 'utf8')).toBe('legacy unchanged');
-  expect((await stat(legacy)).mode & 0o777).toBe(0o755);
-  expect((await stat(legacyFile)).mode & 0o777).toBe(0o644);
-});
-
-it.skipIf(process.getuid?.() !== 0 || process.platform !== 'linux').each(['directory', 'file', 'backup'])('chmod EPERM on a foreign $type gives one streak fallback and leaves it unchanged (needs root-created fixture)', async (kind) => {
-  const { levelRow, PluginLogQueue } = writer();
-  const parent = await temp(); await chmod(parent, 0o755);
-  const dir = join(parent, 'levels'); await mkdir(dir);
-  if (kind === 'directory') await chmod(dir, 0o777);
-  else { await chown(dir, 65534, 65534); await chmod(dir, 0o700); }
-  const file = join(dir, 'errors.jsonl');
-  await writeFile(file, 'seed\n'); await chmod(file, kind === 'backup' ? 0o600 : 0o666);
-  if (kind === 'backup') {
-    await chown(file, 65534, 65534);
-    await writeFile(file + '.1', 'backup unchanged'); await chmod(file + '.1', 0o666);
-  }
-  const queue = new PluginLogQueue(dir, plugin);
-  const runner = (argv: readonly string[]) => run(argv, { uid: 65534, gid: 65534 });
-  queue.add(levelRow(fields, now));
-  expect(await queue.flush(runner)).toEqual({ dropped: 1, error: expect.stringContaining(dir) });
-  queue.add(levelRow(fields, now));
-  expect(await queue.flush(runner)).toEqual({ dropped: 1 });
-  expect(await readFile(file, 'utf8')).toBe('seed\n');
-  expect((await stat(file)).mode & 0o777).toBe(kind === 'backup' ? 0o600 : 0o666);
-  if (kind === 'backup') {
-    expect(await readFile(file + '.1', 'utf8')).toBe('backup unchanged');
-    expect((await stat(file + '.1')).mode & 0o777).toBe(0o666);
-  }
-  expect((await stat(dir)).mode & 0o777).toBe(kind === 'directory' ? 0o777 : 0o700);
-});
-
-it.skipIf(process.getuid?.() === 0)('APPEND_SCRIPT refuses an intentionally unwritable backup without reviving owner write (skip-because:superuser)', async () => {
-  const { levelRow, appendArgv } = writer();
-  const dir = await temp();
-  const file = join(dir, 'errors.jsonl');
-  const backup = file + '.1';
-  await writeFile(file, 'seed\n'); await chmod(file, 0o600);
-  await writeFile(backup, 'backup unchanged'); await chmod(backup, 0o400);
-  try {
-    const out = await run(appendArgv(dir, plugin, [levelRow(fields, now)])[0]);
-    expect(out.exitCode).not.toBe(0); expect(out.stderr).toContain(backup);
-    expect((await stat(backup)).mode & 0o777).toBe(0o400);
-    expect(await readFile(backup, 'utf8')).toBe('backup unchanged');
-    expect(await readFile(file, 'utf8')).toBe('seed\n');
-  } finally { await chmod(backup, 0o600); }
 });

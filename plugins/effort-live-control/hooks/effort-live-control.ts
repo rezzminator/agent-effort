@@ -113,12 +113,10 @@ type Awaiting = { type: string; control: ControlConfig; brief: string };
 type Runtime = {
   pluginSetup?: Promise<string | undefined>;
   pluginDir?: string;
-  pluginSource: 'PLUGIN_LOG_DIR' | 'fallback';
   pluginSession?: Promise<string | undefined>;
   pluginQueue?: PluginLogQueue;
   pluginWriting: Promise<void>;
   pluginFlushing: Promise<void>;
-  pluginReady: boolean;
   config: Settings;
   compiled: Compiled;
   optionErrors: string[];
@@ -166,7 +164,6 @@ function setupPlugin(rt: Runtime, $: EngineInterface): Promise<string | undefine
     try { home = await $.env.get('HOME'); } catch (error) { homeError = { cause: error }; }
     try { configured = await $.env.get('PLUGIN_LOG_DIR'); } catch (error) { dirError = { cause: error }; }
     rt.pluginDir = pluginLogDir(configured, home, 'effort-live-control');
-    rt.pluginSource = configured ? 'PLUGIN_LOG_DIR' : 'fallback';
     rt.pluginQueue = new PluginLogQueue(rt.pluginDir, 'effort-live-control');
     if (homeError !== undefined) notice(rt, $, 'warning', 'home-missing', `effort-live-control: reading HOME failed: ${message(homeError.cause)}; skipping ~/.claude/agents and ~ in logFile`, 'start');
     if (dirError !== undefined) notice(rt, $, 'warning', 'plugin-log-dir-unreadable', `effort-live-control: reading PLUGIN_LOG_DIR failed: ${message(dirError.cause)}; using the HOME fallback when available`, 'start');
@@ -200,8 +197,8 @@ function plog(rt: Runtime, $: EngineInterface, level: Level, event: string, msg:
 }
 
 function notice(rt: Runtime, $: EngineInterface, level: Level, event: string, text: string, component: string): void {
-  $.ui.log(text);
   plog(rt, $, level, event, text, `hooks/effort-live-control.ts#${component}`);
+  $.ui.log(text);
 }
 
 // Rows queue in memory; each flush reads the session's file and appends them,
@@ -590,10 +587,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
   const spawns = newSpawns();
   const { settings, errors } = resolveSettings(options as Record<string, unknown>);
   const rt: Runtime = {
-    pluginSource: 'fallback',
     pluginWriting: Promise.resolve(),
     pluginFlushing: Promise.resolve(),
-    pluginReady: false,
     config: settings,
     compiled: compile(settings),
     optionErrors: errors,
@@ -617,10 +612,6 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('session.start', async ($, e, next) => {
     const result = await next(e);
     await start(rt, $);
-    if (!rt.pluginReady) {
-      rt.pluginReady = true;
-      plog(rt, $, 'info', 'logger-ready', 'effort-live-control: plugin logger ready', 'hooks/effort-live-control.ts#session.start', { version: '0.3.1', dir_source: rt.pluginSource });
-    }
     await registerButtons(rt, $);
     return result;
   });

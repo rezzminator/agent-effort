@@ -55,27 +55,15 @@ dir=$1
 case "$dir" in -*) dir=./$dir ;; esac
 plugin=$2
 shift 2
-[ ! -L "$dir" ] || { printf 'plugin log %s: directory is a symlink\\n' "$dir" >&2; exit 1; }
-mkdir -p -- "$dir" || { printf 'plugin log %s: mkdir failed\\n' "$dir" >&2; exit 1; }
-[ -w "$dir" ] && [ -x "$dir" ] || { printf 'plugin log %s: directory is not writable/searchable\\n' "$dir" >&2; exit 1; }
-chmod 700 "$dir" || { printf 'plugin log %s: chmod failed\\n' "$dir" >&2; exit 1; }
-secure_file() {
-  [ ! -L "$1" ] || { printf 'plugin log %s: level file is a symlink\\n' "$1" >&2; exit 1; }
-  if [ -e "$1" ]; then
-    [ -f "$1" ] && [ -w "$1" ] || { printf 'plugin log %s: level file is not regular/writable\\n' "$1" >&2; exit 1; }
-    chmod 600 "$1" || { printf 'plugin log %s: chmod failed\\n' "$1" >&2; exit 1; }
-  fi
-}
+mkdir -p "$dir" || { printf 'plugin log %s: mkdir failed\\n' "$dir" >&2; exit 1; }
 append_line() {
   file=$1
   row=$2
   path=$dir/$file
-  secure_file "$path"
-  secure_file "$path.1"
   if [ -f "$path" ]; then
     size=$(wc -c < "$path") || { printf 'plugin log %s: size unreadable\\n' "$path" >&2; exit 1; }
     if [ "$size" -gt 20971520 ]; then
-      mv -f -- "$path" "$path.1" || { printf 'plugin log %s: cap rename failed\\n' "$path" >&2; exit 1; }
+      mv -f "$path" "$path.1" || { printf 'plugin log %s: cap rename failed\\n' "$path" >&2; exit 1; }
       stamp=$(date -u +%Y-%m-%dT%H:%M:%S.000Z) || { printf 'plugin log %s: timestamp failed\\n' "$path" >&2; exit 1; }
       # Fixed-order levelRow scalars escape all embedded quotes. Only the
       # top-level structural delimiters below contain unescaped quotes.

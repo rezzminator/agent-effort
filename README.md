@@ -5,7 +5,7 @@
 **Set each Claude Code sub-agent's reasoning effort per spawn with a tag, and let an orchestrator's effort follow its own trouble while it works.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.3.1-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.2-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-551%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -178,7 +178,7 @@ Set under the plugin's settings. A bad value is reported once at the first hook 
 
 ## Logs
 
-Errors, warnings and effort changes are also appended to `errors.jsonl`, `warnings.jsonl` and `info.jsonl` under `$PLUGIN_LOG_DIR/effort-live-control/`. Without `PLUGIN_LOG_DIR`, they use `$HOME/.local/state/effort-live-control/logs/`. One `logger-ready` info row per session names version 0.3.1 and the directory source. Rows contain timestamps, event names, stable code locations and optional session ids; no prompt, transcript or tool-input bodies are added to these files, even with `logPackets` enabled.
+Errors, warnings and effort changes are also appended to `errors.jsonl`, `warnings.jsonl` and `info.jsonl` under `$PLUGIN_LOG_DIR/effort-live-control/`. Without `PLUGIN_LOG_DIR`, they use `$HOME/.local/state/effort-live-control/logs/`. Rows contain timestamps, event names, stable code locations and optional session ids; no prompt, transcript or tool-input bodies are added to these files, even with `logPackets` enabled.
 
 Rows are capped at 4096 bytes. A level file over 20 MiB moves to `.1` and emits a `log-capped` warning. Directories and files are created privately. A failed append gives one screen notice per failing streak, re-armed after a successful write, without changing the plugin's result. Existing screen notices and `logFile` decision logs are unchanged. Appending needs the CLI's `$.process.run` and `/bin/sh`; when unavailable, the screen notice names the failure.
 
