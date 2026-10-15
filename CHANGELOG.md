@@ -7,6 +7,9 @@ Every release of effort-live-control (named agent-effort through 0.1.3). Version
 ### Added
 - Every option can be set by an environment variable, `EFFORT_LIVE_CONTROL_` and the option name in upper snake case (`EFFORT_LIVE_CONTROL_JUDGE_RAISE_AT` for `judgeRaiseAt`). Precedence: the variable, then the plugin's setting, then the default. A boolean is `1`, `0`, `true` or `false`; a list is a JSON array of strings; an unset or blank variable counts as not set. A bad value is reported by variable name at the first hook and the default is used (a bad variable does not fall back to the plugin's setting). The README options table gains the variable column.
 
+### Fixed
+- A failed plugin-log write also reaches the decision log (event `plugin-log-failed`, once per failing streak), not only the screen.
+
 ## [0.3.2] — 2026-10-15
 
 ### Fixed

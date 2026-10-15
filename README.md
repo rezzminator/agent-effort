@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-0.3.3-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-666%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-668%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -174,13 +174,13 @@ Set under the plugin's settings, or in the environment variable named in the tab
 
 ## 📜 Decision log
 
-`logFile` holds one JSONL file per session, the newest 5,000 rows. Every row has `ts`, `event`, `agent` (an id, or `main`) and `type`. Rows: `step` for every steered request (`model`, `requested`, `sent`, `struggle`), `tag` (`tag`, `effort`; `home` and `clamped` for a steered agent), `tag-ignored`, `judge` (`tripwire`, `p`, `from`, `to`, `reason`, `ms`, `usage`), `judge-failed`, `judge-stale`, `judge-busy`, `mechanical` (`tripwire`, `from`, `to`; `busy` when it replaced a stale judge call), `resolved` (`from`, `to`, `requests`, `why`: `resolved` or `decay`), `landing`, `button`, `button-refused`, `model-gated`, `not-steered`, `end`, and option, tool-registration and resolution errors. The main chat adds `prompt` (`p`, `level`, `home`, `ms`, `usage`, `casebook`: core rows shown, `casebookSource`: `file` or `bundled`, `precedents`; `casebookError` when the file could not be read) and, when the reader gave no decision, `reader-timeout`, `reader-failed` (`error`), `reader-unparsed` and `reader-gated` (a model outside `models`); its steered requests are `step` rows with `agent: main`. No prompt, brief, reply or tool-result text is written, except the judge's and the reader's `packet` and `answer` when `logPackets` is on.
+`logFile` holds one JSONL file per session, the newest 5,000 rows. Every row has `ts`, `event`, `agent` (an id, or `main`) and `type`. Rows: `step` for every steered request (`model`, `requested`, `sent`, `struggle`), `tag` (`tag`, `effort`; `home` and `clamped` for a steered agent), `tag-ignored`, `judge` (`tripwire`, `p`, `from`, `to`, `reason`, `ms`, `usage`), `judge-failed`, `judge-stale`, `judge-busy`, `mechanical` (`tripwire`, `from`, `to`; `busy` when it replaced a stale judge call), `resolved` (`from`, `to`, `requests`, `why`: `resolved` or `decay`), `landing`, `button`, `button-refused`, `model-gated`, `not-steered`, `end`, `plugin-log-failed` (`error`: a level-log append failed, once per failing streak), and option, tool-registration and resolution errors. The main chat adds `prompt` (`p`, `level`, `home`, `ms`, `usage`, `casebook`: core rows shown, `casebookSource`: `file` or `bundled`, `precedents`; `casebookError` when the file could not be read) and, when the reader gave no decision, `reader-timeout`, `reader-failed` (`error`), `reader-unparsed` and `reader-gated` (a model outside `models`); its steered requests are `step` rows with `agent: main`. No prompt, brief, reply or tool-result text is written, except the judge's and the reader's `packet` and `answer` when `logPackets` is on.
 
 ## Logs
 
 Errors, warnings and effort changes are also appended to `errors.jsonl`, `warnings.jsonl` and `info.jsonl` under `$PLUGIN_LOG_DIR/effort-live-control/`. Without `PLUGIN_LOG_DIR`, they use `$HOME/.local/state/effort-live-control/logs/`. Rows contain timestamps, event names, stable code locations and optional session ids; no prompt, transcript or tool-input bodies are added to these files, even with `logPackets` enabled.
 
-Rows are capped at 4096 bytes. A level file over 20 MiB moves to `.1` and emits a `log-capped` warning. Directories and files are created privately. A failed append gives one screen notice per failing streak, re-armed after a successful write, without changing the plugin's result. Existing screen notices and `logFile` decision logs are unchanged. Appending needs the CLI's `$.process.run` and `/bin/sh`; when unavailable, the screen notice names the failure.
+Rows are capped at 4096 bytes. A level file over 20 MiB moves to `.1` and emits a `log-capped` warning. Directories and files are created privately. A failed append gives one screen notice and one `plugin-log-failed` decision row per failing streak, re-armed after a successful write, without changing the plugin's result. Appending needs the CLI's `$.process.run` and `/bin/sh`; when unavailable, the screen notice names the failure.
 
 ## ❓ FAQ
 

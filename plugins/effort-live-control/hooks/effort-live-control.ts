@@ -182,7 +182,10 @@ async function flushPlugin(rt: Runtime, $: EngineInterface): Promise<void> {
     try { return await $.process.run(argv, init); }
     catch (error) { throw new Error(`$.process.run failed: ${message(error)}`); }
   });
-  if (out.error !== undefined) logFallback($, `effort-live-control: ${out.error}`);
+  if (out.error !== undefined) {
+    logFallback($, `effort-live-control: ${out.error}`);
+    record(rt, $, 'main', 'plugin', { event: 'plugin-log-failed', error: out.error });
+  }
 }
 
 // Only the metadata preparation is queued here; subprocesses have their own
@@ -715,6 +718,9 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('session.end', async ($, e, next) => {
     await rt.pluginWriting;
     await rt.pluginFlushing;
+    // The last flush may queue a decision row (a failed append's plugin-log-failed): it is on disk before the session ends.
+    // A write failure's notice has queued its level row before a throwing screen rejected the chain; the session still ends.
+    await rt.writing.catch((error) => logFallback($, `effort-live-control: finishing the decision log failed: ${message(error)}`));
     return next(e);
   });
 
