@@ -215,3 +215,90 @@ describe('compile', () => {
     expect(compiled.readOnly).toEqual(new Set(DEFAULTS.readOnlyCommands));
   });
 });
+
+// Every option is also read from EFFORT_LIVE_CONTROL_{OPTION}: the variable wins over the plugin option, a bad one
+// is reported by its name and the default applies, a blank one is no variable.
+type EnvRow = { key: keyof typeof DEFAULTS; name: string; env: string; expected: unknown; option: unknown; bad?: string };
+const ENV_ROWS: EnvRow[] = [
+  { key: 'floor', name: 'EFFORT_LIVE_CONTROL_FLOOR', env: 'high', expected: 'high', option: 'low', bad: 'sideways' },
+  { key: 'ceiling', name: 'EFFORT_LIVE_CONTROL_CEILING', env: 'high', expected: 'high', option: 'max', bad: 'sideways' },
+  { key: 'parentTag', name: 'EFFORT_LIVE_CONTROL_PARENT_TAG', env: 'ignore', expected: 'ignore', option: 'honor', bad: 'maybe' },
+  { key: 'models', name: 'EFFORT_LIVE_CONTROL_MODELS', env: '["claude-x"]', expected: ['claude-x'], option: ['claude-y'], bad: 'claude-x' },
+  { key: 'judge', name: 'EFFORT_LIVE_CONTROL_JUDGE', env: ' TRUE ', expected: true, option: false, bad: 'maybe' },
+  { key: 'judgeRaiseAt', name: 'EFFORT_LIVE_CONTROL_JUDGE_RAISE_AT', env: '40', expected: 40, option: 50, bad: '101' },
+  { key: 'tripwires', name: 'EFFORT_LIVE_CONTROL_TRIPWIRES', env: 'red', expected: 'red', option: 'fail1', bad: 'bogus' },
+  { key: 'struggleDecay', name: 'EFFORT_LIVE_CONTROL_STRUGGLE_DECAY', env: '0', expected: 0, option: 5, bad: '-1' },
+  { key: 'judgeModel', name: 'EFFORT_LIVE_CONTROL_JUDGE_MODEL', env: 'sonnet', expected: 'sonnet', option: 'opus', bad: 'two words' },
+  { key: 'judgeEffort', name: 'EFFORT_LIVE_CONTROL_JUDGE_EFFORT', env: 'high', expected: 'high', option: 'low', bad: 'ultra' },
+  { key: 'judgeTimeoutMs', name: 'EFFORT_LIVE_CONTROL_JUDGE_TIMEOUT_MS', env: '9000', expected: 9000, option: 8000, bad: '0' },
+  { key: 'mainChat', name: 'EFFORT_LIVE_CONTROL_MAIN_CHAT', env: 'off', expected: 'off', option: 'tripwires', bad: 'sometimes' },
+  { key: 'casebookFile', name: 'EFFORT_LIVE_CONTROL_CASEBOOK_FILE', env: '/cases/env.jsonl', expected: '/cases/env.jsonl', option: '/cases/option.jsonl' },
+  { key: 'promptModel', name: 'EFFORT_LIVE_CONTROL_PROMPT_MODEL', env: 'sonnet', expected: 'sonnet', option: 'opus', bad: 'two words' },
+  { key: 'promptEffort', name: 'EFFORT_LIVE_CONTROL_PROMPT_EFFORT', env: 'low', expected: 'low', option: 'high', bad: 'ultra' },
+  { key: 'promptTimeoutMs', name: 'EFFORT_LIVE_CONTROL_PROMPT_TIMEOUT_MS', env: '2000', expected: 2000, option: 3000, bad: 'soon' },
+  { key: 'buttons', name: 'EFFORT_LIVE_CONTROL_BUTTONS', env: '0', expected: false, option: true, bad: 'yes' },
+  { key: 'announce', name: 'EFFORT_LIVE_CONTROL_ANNOUNCE', env: 'False', expected: false, option: true, bad: 'no' },
+  { key: 'testCommandPatterns', name: 'EFFORT_LIVE_CONTROL_TEST_COMMAND_PATTERNS', env: '["^make$"]', expected: ['^make$'], option: ['^ci$'], bad: '["(unclosed"]' },
+  { key: 'readOnlyCommands', name: 'EFFORT_LIVE_CONTROL_READ_ONLY_COMMANDS', env: '["ls"]', expected: ['ls'], option: ['cat'], bad: '["two words"]' },
+  { key: 'failurePatterns', name: 'EFFORT_LIVE_CONTROL_FAILURE_PATTERNS', env: '["boom"]', expected: ['boom'], option: ['bang'], bad: '["(unclosed"]' },
+  { key: 'redWords', name: 'EFFORT_LIVE_CONTROL_RED_WORDS', env: '["NO"]', expected: ['NO'], option: ['NOPE'], bad: '["OK now"]' },
+  { key: 'greenWords', name: 'EFFORT_LIVE_CONTROL_GREEN_WORDS', env: '["YES"]', expected: ['YES'], option: ['OK'], bad: '[1]' },
+  { key: 'agentDirs', name: 'EFFORT_LIVE_CONTROL_AGENT_DIRS', env: '["/x"]', expected: ['/x'], option: ['/y'], bad: '{"dir":"/x"}' },
+  { key: 'logFile', name: 'EFFORT_LIVE_CONTROL_LOG_FILE', env: '/logs/env.jsonl', expected: '/logs/env.jsonl', option: '/logs/option.jsonl' },
+  { key: 'logPackets', name: 'EFFORT_LIVE_CONTROL_LOG_PACKETS', env: '1', expected: true, option: false, bad: 'yes' },
+];
+
+describe('resolveSettings: environment variables', () => {
+  it('covers every option', () => {
+    expect(ENV_ROWS.map((row) => row.key).sort()).toEqual([...SETTING_KEYS].sort());
+  });
+
+  it.each(ENV_ROWS)('$name overrides the $key option', ({ key, env, expected, option }) => {
+    const { settings, errors } = resolveSettings({ [key]: option }, { [key]: env });
+    expect(errors).toEqual([]);
+    expect(settings[key]).toEqual(expected);
+  });
+
+  it.each(ENV_ROWS.filter((row) => row.bad !== undefined))('$name with a bad value is reported by name and the default applies over a valid $key option', ({ key, name, option, bad }) => {
+    const { settings, errors } = resolveSettings({ [key]: option }, { [key]: bad });
+    expect(settings[key]).toEqual(DEFAULTS[key]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain(`environment variable ${name} is ${JSON.stringify(bad)}`);
+    expect(errors[0]).toContain(`using the default ${JSON.stringify(DEFAULTS[key])}`);
+  });
+
+  it.each(ENV_ROWS)('$key: an unset or blank $name leaves the option, then the default', ({ key, option }) => {
+    for (const env of [{}, { [key]: undefined }, { [key]: '' }, { [key]: ' \t ' }]) {
+      const withOption = resolveSettings({ [key]: option }, env);
+      expect(withOption.errors).toEqual([]);
+      expect(withOption.settings[key]).toEqual(option);
+      expect(resolveSettings({}, env)).toEqual({ settings: DEFAULTS, errors: [] });
+    }
+  });
+
+  it('words a bad value like a bad option, naming the variable', () => {
+    const { errors } = resolveSettings({}, { floor: 'sideways' });
+    expect(errors).toEqual(['effort-live-control: environment variable EFFORT_LIVE_CONTROL_FLOOR is "sideways", not a level (low, medium, high, xhigh, max); using the default "medium"']);
+  });
+
+  it('reads an empty JSON array as the empty list, over a list option', () => {
+    expect(resolveSettings({ models: ['claude-y'], agentDirs: ['/y'] }, { models: '[]', agentDirs: '[]' })).toEqual({ settings: { ...DEFAULTS, models: [], agentDirs: [] }, errors: [] });
+  });
+
+  it('reads the boolean words 1, 0, true and false in any case and nothing else', () => {
+    for (const [text, value] of [['1', true], ['TRUE', true], [' true\n', true], ['0', false], ['False', false]] as const) expect(resolveSettings({}, { announce: text }).settings.announce, text).toBe(value);
+    for (const text of ['yes', 'on', '2', 'tru']) expect(resolveSettings({}, { announce: text }).errors, text).toHaveLength(1);
+  });
+
+  it('checks the floor against the ceiling across the layers', () => {
+    const { settings, errors } = resolveSettings({ ceiling: 'low' }, { floor: 'max' });
+    expect(settings).toMatchObject({ floor: 'medium', ceiling: 'xhigh' });
+    expect(errors[0]).toContain('environment variable EFFORT_LIVE_CONTROL_FLOOR ("max") is above option "ceiling" ("low")');
+    expect(resolveSettings({ floor: 'high' }, { ceiling: 'low' }).errors[0]).toContain('option "floor" ("high") is above environment variable EFFORT_LIVE_CONTROL_CEILING ("low")');
+    expect(resolveSettings({ floor: 'high', ceiling: 'low' }).errors[0]).toContain('option "floor" ("high") is above option "ceiling" ("low")');
+  });
+
+  it('names where a list variable stopped being JSON', () => {
+    expect(resolveSettings({}, { models: '["a",]' }).errors[0]).toMatch(/EFFORT_LIVE_CONTROL_MODELS is .*not a JSON array of strings \(.+\)/);
+  });
+});

@@ -2,6 +2,11 @@
 
 Every release of effort-live-control (named agent-effort through 0.1.3). Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `effort-live-control--v<version>` (`agent-effort--v<version>` through 0.1.3), with a GitHub release carrying the section below.
 
+## [Unreleased]
+
+### Added
+- Every option can be set by an environment variable, `EFFORT_LIVE_CONTROL_` and the option name in upper snake case (`EFFORT_LIVE_CONTROL_JUDGE_RAISE_AT` for `judgeRaiseAt`). Precedence: the variable, then the plugin's setting, then the default. A boolean is `1`, `0`, `true` or `false`; a list is a JSON array of strings; an unset or blank variable counts as not set. A bad value is reported by variable name at the first hook and the default is used (a bad variable does not fall back to the plugin's setting). The README options table gains the variable column.
+
 ## [0.3.2] — 2026-10-15
 
 ### Fixed

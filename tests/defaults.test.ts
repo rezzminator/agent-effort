@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { DEFAULTS, SETTING_KEYS } from '../plugins/effort-live-control/src/settings.ts';
+import { DEFAULTS, envName, SETTING_KEYS } from '../plugins/effort-live-control/src/settings.ts';
 
-// Every knob is a plugin option. Defaults agree in three places: src/settings.ts, plugin.json's userConfig and the README table.
+// Every knob is a plugin option. Defaults agree in three places: src/settings.ts, plugin.json's userConfig and the README table. The README table also names each option's environment variable.
 const root = new URL('../', import.meta.url);
 const manifest = JSON.parse(readFileSync(new URL('plugins/effort-live-control/.claude-plugin/plugin.json', root), 'utf8'));
 const readmes = ['README.md', 'plugins/effort-live-control/README.md'].map((path) => [path, readFileSync(new URL(path, root), 'utf8')] as const);
@@ -27,17 +27,18 @@ describe('plugin options', () => {
       expect(row, key).toBeDefined();
       // A GFM cell ends at every `|` not escaped as `\|`, inside code spans too.
       const cells = row!.split(/(?<!\\)\|/).slice(1, -1).map((cell) => cell.trim());
-      expect(cells, key).toHaveLength(3);
+      expect(cells, key).toHaveLength(4);
+      expect(cells[1], key).toBe(`\`${envName(key)}\``);
       const value = DEFAULTS[key];
       if (Array.isArray(value) && value.length === 0) {
-        expect(cells[1], key).toBe('*(none)*');
+        expect(cells[2], key).toBe('*(none)*');
         continue;
       }
       if (value === '') {
-        expect(cells[1], key).toBe('*(empty)*');
+        expect(cells[2], key).toBe('*(empty)*');
         continue;
       }
-      const shown = cells[1]!.split('<br>').map((entry) => entry.replace(/^`|`$/g, '').replace(/\\\|/g, '|'));
+      const shown = cells[2]!.split('<br>').map((entry) => entry.replace(/^`|`$/g, '').replace(/\\\|/g, '|'));
       expect(shown, key).toEqual(Array.isArray(value) ? value : [String(value)]);
     }
   });
