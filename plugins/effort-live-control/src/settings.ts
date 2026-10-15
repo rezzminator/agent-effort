@@ -1,5 +1,7 @@
-// Every knob is a plugin option. Defaults agree in three places: here, plugin.json's userConfig and the README table.
-// A bad value is reported by key and value, and the default applies.
+// Every knob is a plugin option, and each is also read from the environment variable EFFORT_LIVE_CONTROL_{OPTION}.
+// Precedence: the variable, then the plugin option, then the default. Defaults agree in three places: here,
+// plugin.json's userConfig and the README table.
+// A bad value is reported by key (or variable name) and value, and the default applies.
 
 import { isEffort, isParentTag, LEVELS, type Effort, type ParentTag } from './effort.ts';
 import { parseTripwires } from './judge.ts';
@@ -91,6 +93,12 @@ export const DEFAULTS: Settings = {
 };
 
 export const SETTING_KEYS = Object.keys(DEFAULTS) as Array<keyof Settings>;
+
+/** The environment variable that sets an option: `EFFORT_LIVE_CONTROL_` and the option name in upper snake case. */
+export const envName = (key: keyof Settings): string => `EFFORT_LIVE_CONTROL_${key.replace(/[A-Z]/g, (letter) => `_${letter}`).toUpperCase()}`;
+
+/** The variables' text by option; an unset variable has no entry or `undefined`. */
+export type OptionEnv = Readonly<Partial<Record<keyof Settings, string | undefined>>>;
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; why: string };
 const good = <T>(value: T): Parsed<T> => ({ ok: true, value });
@@ -206,15 +214,54 @@ const PARSERS: { [K in keyof Settings]: (raw: unknown) => Parsed<Settings[K] | '
   logPackets: parseBool,
 };
 
+/** An environment variable's text as the option's value: a JSON array of strings for a list, `1|0|true|false` for a boolean, the option's own grammar otherwise. */
+function parseEnv(key: keyof Settings, text: string): Parsed<unknown> {
+  const parser = PARSERS[key] as (raw: unknown) => Parsed<unknown>;
+  const kind = DEFAULTS[key];
+  if (typeof kind === 'boolean') {
+    const word = text.trim().toLowerCase();
+    if (word === '1' || word === 'true') return good(true);
+    if (word === '0' || word === 'false') return good(false);
+    return bad('not 1, 0, true or false');
+  }
+  if (Array.isArray(kind)) {
+    let list: unknown;
+    try {
+      list = JSON.parse(text);
+    } catch (error) {
+      return bad(`not a JSON array of strings (${clip(error instanceof Error ? error.message : String(error), 80)})`);
+    }
+    return Array.isArray(list) && list.every((item) => typeof item === 'string') ? parser(list) : bad('not a JSON array of strings');
+  }
+  return parser(text);
+}
+
 function errorLine(key: string, raw: unknown, why: string): string {
   return `effort-live-control: option "${key}" is ${quote(raw)}, ${why}; using the default ${JSON.stringify(DEFAULTS[key as keyof Settings])}`;
 }
 
-/** Every option read, validated and defaulted; `errors` holds one line per rejected option. */
-export function resolveSettings(raw: Readonly<Record<string, unknown>>): { settings: Settings; errors: string[] } {
+function envErrorLine(key: keyof Settings, text: string, why: string): string {
+  return `effort-live-control: environment variable ${envName(key)} is ${quote(text)}, ${why}; using the default ${JSON.stringify(DEFAULTS[key])}`;
+}
+
+/**
+ * Every option read, validated and defaulted; `errors` holds one line per rejected value. A set, non-blank variable wins
+ * over the plugin option; a bad one is reported and the default applies, the plugin option not consulted.
+ */
+export function resolveSettings(raw: Readonly<Record<string, unknown>>, env: OptionEnv = {}): { settings: Settings; errors: string[] } {
   const settings: Record<string, unknown> = { ...DEFAULTS };
   const errors: string[] = [];
+  const fromEnv = new Set<keyof Settings>();
   for (const key of SETTING_KEYS) {
+    const text = env[key];
+    if (text !== undefined && text.trim() !== '') {
+      const parsed = parseEnv(key, text);
+      if (parsed.ok) {
+        settings[key] = parsed.value;
+        fromEnv.add(key);
+      } else errors.push(envErrorLine(key, text, parsed.why));
+      continue;
+    }
     const value = raw[key];
     if (value === undefined) continue;
     const parsed = (PARSERS[key] as (raw: unknown) => Parsed<unknown>)(value);
@@ -223,7 +270,8 @@ export function resolveSettings(raw: Readonly<Record<string, unknown>>): { setti
   }
   const out = settings as Settings;
   if (rank(out.floor) > rank(out.ceiling)) {
-    errors.push(`effort-live-control: option "floor" (${JSON.stringify(out.floor)}) is above option "ceiling" (${JSON.stringify(out.ceiling)}); using the defaults ${JSON.stringify(DEFAULTS.floor)} and ${JSON.stringify(DEFAULTS.ceiling)}`);
+    const side = (key: 'floor' | 'ceiling') => (fromEnv.has(key) ? `environment variable ${envName(key)}` : `option "${key}"`);
+    errors.push(`effort-live-control: ${side('floor')} (${JSON.stringify(out.floor)}) is above ${side('ceiling')} (${JSON.stringify(out.ceiling)}); using the defaults ${JSON.stringify(DEFAULTS.floor)} and ${JSON.stringify(DEFAULTS.ceiling)}`);
     out.floor = DEFAULTS.floor;
     out.ceiling = DEFAULTS.ceiling;
   }

@@ -20,6 +20,8 @@ effort raised at each tripwire and brought home once the trouble resolves.
 ## Rules
 
 - A new behaviour lands in `plugins/effort-live-control/src/` as a pure function with a test watched failing first; the adapter only wires it.
+- Every option is also a variable `EFFORT_LIVE_CONTROL_{OPTION}`, upper snake, listed in the README options table: variable > plugin option > default; booleans `1|0|true|false`, any case, lists a JSON array of strings, blank is unset; a bad variable is reported by its name and the default applies.
+- `readOptionEnv` spells each name as a string literal, since Claude Code refuses computed names; a new option adds its literal there, its row with the variable column in both READMEs, and a table row in `tests/settings.test.ts`.
 - An error never holds a spawn or a request: log it with context and let it through at the effort it already had.
 - A malformed tag refuses the spawn with a message naming the valid levels; it is never silently dropped.
 - A version bump moves `plugins/effort-live-control/.claude-plugin/plugin.json`, `marketplace.json`, `package.json`, `package-lock.json` and the README badge together; installed copies update only on a new version.

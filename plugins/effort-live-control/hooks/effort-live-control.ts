@@ -7,7 +7,7 @@ import { clamp, isLevel } from '../src/ladder.ts';
 import { appendRows, sessionLogPath } from '../src/log.ts';
 import { levelRow, pluginLogDir, PluginLogQueue, type Level } from '../src/plugin-log.ts';
 import { buildReader, CasebookCache, decide, NO_PREVIOUS, parseReaderAnswer, resolveCasebook, type CasebookIo } from '../src/reader.ts';
-import { compile, resolveSettings, type Compiled, type Settings } from '../src/settings.ts';
+import { compile, envName, resolveSettings, SETTING_KEYS, type Compiled, type OptionEnv, type Settings } from '../src/settings.ts';
 import { isRead, isTestRun, testOutcome } from '../src/signals.ts';
 import { startOf } from '../src/start.ts';
 import { BUTTON_DOWN, BUTTON_UP, REFUSED, type Direction } from '../src/text.ts';
@@ -111,6 +111,9 @@ async function awaitPin(rt: Runtime, $: EngineInterface, spawns: Spawns, agentId
 type Awaiting = { type: string; control: ControlConfig; brief: string };
 
 type Runtime = {
+  /** The plugin options as the host gave them; the environment variables are layered over them once, by `settleOptions`. */
+  rawOptions: Readonly<Record<string, unknown>>;
+  optionsSettled?: Promise<void>;
   pluginSetup?: Promise<string | undefined>;
   pluginDir?: string;
   pluginSession?: Promise<string | undefined>;
@@ -237,9 +240,66 @@ function tripwiresOf(text: string) {
   return found.ok ? found.value : [...TRIPWIRES];
 }
 
+/** One environment variable read: its text (undefined when unset), or the error the read raised. */
+type EnvRead = { ok: true; value: string | undefined } | { ok: false; error: unknown };
+
+const attempt = (read: Promise<string | undefined>): Promise<EnvRead> => read.then((value): EnvRead => ({ ok: true, value }), (error): EnvRead => ({ ok: false, error }));
+
+// Each name is spelled out: Claude Code reads the names a module uses off its source and refuses a computed one.
+async function readOptionEnv($: EngineInterface): Promise<Record<keyof Settings, EnvRead>> {
+  return {
+    floor: await attempt($.env.get('EFFORT_LIVE_CONTROL_FLOOR')),
+    ceiling: await attempt($.env.get('EFFORT_LIVE_CONTROL_CEILING')),
+    parentTag: await attempt($.env.get('EFFORT_LIVE_CONTROL_PARENT_TAG')),
+    models: await attempt($.env.get('EFFORT_LIVE_CONTROL_MODELS')),
+    judge: await attempt($.env.get('EFFORT_LIVE_CONTROL_JUDGE')),
+    judgeRaiseAt: await attempt($.env.get('EFFORT_LIVE_CONTROL_JUDGE_RAISE_AT')),
+    tripwires: await attempt($.env.get('EFFORT_LIVE_CONTROL_TRIPWIRES')),
+    struggleDecay: await attempt($.env.get('EFFORT_LIVE_CONTROL_STRUGGLE_DECAY')),
+    judgeModel: await attempt($.env.get('EFFORT_LIVE_CONTROL_JUDGE_MODEL')),
+    judgeEffort: await attempt($.env.get('EFFORT_LIVE_CONTROL_JUDGE_EFFORT')),
+    judgeTimeoutMs: await attempt($.env.get('EFFORT_LIVE_CONTROL_JUDGE_TIMEOUT_MS')),
+    mainChat: await attempt($.env.get('EFFORT_LIVE_CONTROL_MAIN_CHAT')),
+    casebookFile: await attempt($.env.get('EFFORT_LIVE_CONTROL_CASEBOOK_FILE')),
+    promptModel: await attempt($.env.get('EFFORT_LIVE_CONTROL_PROMPT_MODEL')),
+    promptEffort: await attempt($.env.get('EFFORT_LIVE_CONTROL_PROMPT_EFFORT')),
+    promptTimeoutMs: await attempt($.env.get('EFFORT_LIVE_CONTROL_PROMPT_TIMEOUT_MS')),
+    buttons: await attempt($.env.get('EFFORT_LIVE_CONTROL_BUTTONS')),
+    announce: await attempt($.env.get('EFFORT_LIVE_CONTROL_ANNOUNCE')),
+    testCommandPatterns: await attempt($.env.get('EFFORT_LIVE_CONTROL_TEST_COMMAND_PATTERNS')),
+    readOnlyCommands: await attempt($.env.get('EFFORT_LIVE_CONTROL_READ_ONLY_COMMANDS')),
+    failurePatterns: await attempt($.env.get('EFFORT_LIVE_CONTROL_FAILURE_PATTERNS')),
+    redWords: await attempt($.env.get('EFFORT_LIVE_CONTROL_RED_WORDS')),
+    greenWords: await attempt($.env.get('EFFORT_LIVE_CONTROL_GREEN_WORDS')),
+    agentDirs: await attempt($.env.get('EFFORT_LIVE_CONTROL_AGENT_DIRS')),
+    logFile: await attempt($.env.get('EFFORT_LIVE_CONTROL_LOG_FILE')),
+    logPackets: await attempt($.env.get('EFFORT_LIVE_CONTROL_LOG_PACKETS')),
+  };
+}
+
+// The environment variables are layered over the plugin options once, before anything reads a setting.
+function settleOptions(rt: Runtime, $: EngineInterface): Promise<void> {
+  rt.optionsSettled ??= (async () => {
+    const read = await readOptionEnv($);
+    const env: Partial<Record<keyof Settings, string>> = {};
+    const readErrors: string[] = [];
+    for (const key of SETTING_KEYS) {
+      const one = read[key];
+      if (!one.ok) readErrors.push(`effort-live-control: reading ${envName(key)} failed: ${message(one.error)}; using the option or its default`);
+      else if (one.value !== undefined) env[key] = one.value;
+    }
+    const { settings, errors } = resolveSettings(rt.rawOptions, env satisfies OptionEnv);
+    rt.config = settings;
+    rt.compiled = compile(settings);
+    rt.optionErrors = [...errors, ...readErrors];
+  })().catch((error) => notice(rt, $, 'error', 'environment-unreadable', `effort-live-control: reading the environment variables failed: ${message(error)}; using the plugin options`, 'settleOptions'));
+  return rt.optionsSettled;
+}
+
 // First hook call: read where definitions live, report option errors, build the resolver.
 function start(rt: Runtime, $: EngineInterface): Promise<void> {
   rt.started ??= (async () => {
+    await settleOptions(rt, $);
     const home = await setupPlugin(rt, $);
     let cwd = '.';
     let configDir: string | undefined;
@@ -474,6 +534,7 @@ function answerButton(rt: Runtime, $: EngineInterface, agentId: string | undefin
 }
 
 async function registerButtons(rt: Runtime, $: EngineInterface): Promise<void> {
+  await settleOptions(rt, $);
   if (!rt.config.buttons) return;
   const specs: Array<{ name: string; description: string; direction: Direction }> = [
     { name: 'effort_up', description: BUTTON_UP, direction: 'up' },
@@ -598,6 +659,7 @@ async function readPrompt(rt: Runtime, $: EngineInterface, text: string): Promis
 // The main chat's request: the first of a turn sets its home (the reader's decision, else the level the request asks
 // for), every request goes at the controller's level. Undefined: send the request as it is.
 async function steerMain(rt: Runtime, $: EngineInterface, e: { turnId: string; model: string; effort?: unknown }): Promise<Effort | undefined> {
+  await settleOptions(rt, $);
   if (rt.config.mainChat === 'off') return undefined;
   try {
     await start(rt, $);
@@ -620,8 +682,10 @@ async function steerMain(rt: Runtime, $: EngineInterface, e: { turnId: string; m
 
 export const register: Register = (on: On, options: PluginOptions) => {
   const spawns = newSpawns();
-  const { settings, errors } = resolveSettings(options as Record<string, unknown>);
+  const rawOptions = options as Record<string, unknown>;
+  const { settings, errors } = resolveSettings(rawOptions);
   const rt: Runtime = {
+    rawOptions,
     pluginWriting: Promise.resolve(),
     pluginFlushing: Promise.resolve(),
     config: settings,
@@ -663,6 +727,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('tool.describe', async ($, e, next) => {
     const result = await next(e);
     if (!AGENT_TOOLS.has(e.tool)) return result;
+    await settleOptions(rt, $);
     return { ...result, description: describe(result.description, rt.config.parentTag) };
   });
 
@@ -696,6 +761,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('prompt.submit', async ($, e, next) => {
     // A prompt typed between turns, or typed over a running turn to wait for it (`wait`), starts its own turn. One
     // delivered into the running turn does not.
+    await settleOptions(rt, $);
     if ((e.turnId === undefined || e.wait) && rt.config.mainChat === 'reader') {
       let home: Effort | undefined;
       try {

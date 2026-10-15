@@ -1578,6 +1578,19 @@ suite('main chat: the casebook', () => {
     expect(none.calls[0].prompt).not.toContain('# Casebook');
     expect(none.x.logs).toEqual([]);
   });
+
+  it('main chat: EFFORT_LIVE_CONTROL_MAIN_CHAT=off leaves the chat untouched over a reader option, and the reader is not called', async () => {
+    const { x, calls } = withReader({ mainChat: 'reader' }, { env: { EFFORT_LIVE_CONTROL_MAIN_CHAT: 'off' } });
+    await x.prompt('go');
+    expect(calls).toHaveLength(0);
+    expect(await x.mainStep('low')).toBe('low');
+  });
+
+  it('main chat: EFFORT_LIVE_CONTROL_CASEBOOK_FILE overrides the casebookFile option', async () => {
+    const own = withReader({ casebookFile: '' }, { env: { EFFORT_LIVE_CONTROL_CASEBOOK_FILE: '~/cases.jsonl' }, files: { '/fixture-home/t/cases.jsonl': caseLine() } });
+    await own.x.prompt('go');
+    expect(own.calls[0].prompt).toContain('# Casebook');
+  });
 });
 
 suite('main chat: tripwires mid-turn', () => {
@@ -1829,5 +1842,81 @@ suite('plugin log adapter', () => {
     const text = JSON.stringify(await readRows(target, 'warnings.jsonl'));
     expect(text).not.toContain('private test body');
     expect(await x.mainStep('medium')).toBe('high'); await x.sessionEnd();
+  });
+});
+
+suite('environment variables', () => {
+  // Every option has its own EFFORT_LIVE_CONTROL_{OPTION} variable; a bad value names it in the first hook's report.
+  const BAD: Array<[name: string, bad: string]> = [
+    ['EFFORT_LIVE_CONTROL_FLOOR', 'sideways'],
+    ['EFFORT_LIVE_CONTROL_CEILING', 'sideways'],
+    ['EFFORT_LIVE_CONTROL_PARENT_TAG', 'maybe'],
+    ['EFFORT_LIVE_CONTROL_MODELS', 'not json'],
+    ['EFFORT_LIVE_CONTROL_JUDGE', 'maybe'],
+    ['EFFORT_LIVE_CONTROL_JUDGE_RAISE_AT', '101'],
+    ['EFFORT_LIVE_CONTROL_TRIPWIRES', 'bogus'],
+    ['EFFORT_LIVE_CONTROL_STRUGGLE_DECAY', '-1'],
+    ['EFFORT_LIVE_CONTROL_JUDGE_MODEL', 'two words'],
+    ['EFFORT_LIVE_CONTROL_JUDGE_EFFORT', 'ultra'],
+    ['EFFORT_LIVE_CONTROL_JUDGE_TIMEOUT_MS', '0'],
+    ['EFFORT_LIVE_CONTROL_MAIN_CHAT', 'sometimes'],
+    ['EFFORT_LIVE_CONTROL_PROMPT_MODEL', 'two words'],
+    ['EFFORT_LIVE_CONTROL_PROMPT_EFFORT', 'ultra'],
+    ['EFFORT_LIVE_CONTROL_PROMPT_TIMEOUT_MS', 'soon'],
+    ['EFFORT_LIVE_CONTROL_BUTTONS', 'yes'],
+    ['EFFORT_LIVE_CONTROL_ANNOUNCE', 'yes'],
+    ['EFFORT_LIVE_CONTROL_TEST_COMMAND_PATTERNS', '["(unclosed"]'],
+    ['EFFORT_LIVE_CONTROL_READ_ONLY_COMMANDS', '["two words"]'],
+    ['EFFORT_LIVE_CONTROL_FAILURE_PATTERNS', '["(unclosed"]'],
+    ['EFFORT_LIVE_CONTROL_RED_WORDS', '["OK now"]'],
+    ['EFFORT_LIVE_CONTROL_GREEN_WORDS', '[1]'],
+    ['EFFORT_LIVE_CONTROL_AGENT_DIRS', '{"dir":"/x"}'],
+    ['EFFORT_LIVE_CONTROL_LOG_PACKETS', 'yes'],
+  ];
+
+  it.each(BAD)('%s is read, and a bad value is reported by name with the default used', async (name, bad) => {
+    const x = engine(new Map(), { env: { [name]: bad } });
+    await x.sessionStart();
+    expect(x.logs.filter((line) => line.includes(`environment variable ${name} is ${JSON.stringify(bad)}`))).toHaveLength(1);
+    expect(x.logs.filter((line) => line.includes('option "'))).toEqual([]);
+  });
+
+  it('EFFORT_LIVE_CONTROL_LOG_FILE overrides the logFile option', async () => {
+    const x = engine(new Map(), { env: { EFFORT_LIVE_CONTROL_LOG_FILE: '~/logs/env.jsonl' }, options: { logFile: '' } });
+    await x.sessionStart();
+    await x.tick();
+    await x.tick();
+    expect(x.files.has('/fixture-home/t/logs/env.sess1.jsonl')).toBe(true);
+  });
+
+  it('EFFORT_LIVE_CONTROL_BUTTONS decides whether the two tools register, over the buttons option', async () => {
+    const off = engine(new Map(), { env: { EFFORT_LIVE_CONTROL_BUTTONS: '0' }, options: { buttons: true } });
+    await off.sessionStart();
+    expect(off.registered).toEqual([]);
+    const on = engine(new Map(), { env: { EFFORT_LIVE_CONTROL_BUTTONS: ' ' }, options: { buttons: true } });
+    await on.sessionStart();
+    expect(on.registered.map((spec) => spec.name)).toEqual(['effort_up', 'effort_down']);
+    const unset = engine(new Map(), { options: { buttons: false } });
+    await unset.sessionStart();
+    expect(unset.registered).toEqual([]);
+  });
+
+  it('EFFORT_LIVE_CONTROL_PARENT_TAG shapes the Agent tool description before any session start', async () => {
+    const honor = await engine(new Map(), { env: { EFFORT_LIVE_CONTROL_PARENT_TAG: 'honor' }, options: { parentTag: 'ignore' } }).describeTool('Agent', 'Spawns.');
+    const ignore = await engine(new Map(), { env: { EFFORT_LIVE_CONTROL_PARENT_TAG: 'ignore' } }).describeTool('Agent', 'Spawns.');
+    expect(honor.description).not.toBe(ignore.description);
+    expect((await engine(new Map(), { options: { parentTag: 'ignore' } }).describeTool('Agent', 'Spawns.')).description).toBe(ignore.description);
+  });
+
+  it('a variable that cannot be read is reported by name and the option decides', async () => {
+    const x = engine(new Map(), { options: { buttons: false } });
+    const read = x.$.env.get;
+    x.$.env.get = async (name: string) => {
+      if (name === 'EFFORT_LIVE_CONTROL_BUTTONS') throw new Error('env denied');
+      return read(name);
+    };
+    await x.sessionStart();
+    expect(x.registered).toEqual([]);
+    expect(x.logs.join('\n')).toContain('effort-live-control: reading EFFORT_LIVE_CONTROL_BUTTONS failed: env denied; using the option or its default');
   });
 });
