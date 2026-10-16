@@ -5,9 +5,9 @@
 **Set each Claude Code sub-agent's reasoning effort per spawn with a tag, and let an orchestrator's effort follow its own trouble while it works.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.2.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.5-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-514%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-668%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -141,40 +141,46 @@ A steered agent starts at its **home** level: its tag, else its definition's `ef
 
 ## ⚙️ Options
 
-Set under the plugin's settings. A bad value is reported once at the first hook and the default used.
+Set under the plugin's settings, or in the environment variable named in the table: `EFFORT_LIVE_CONTROL_` and the option in upper snake case. A variable wins over the plugin's setting, which wins over the default. A variable that is unset or blank counts as not set. Write a boolean as `1`, `0`, `true` or `false` (any case); a number as the option takes it; a list as a JSON array of strings, e.g. `EFFORT_LIVE_CONTROL_MODELS='["claude-opus-5-5"]'`, with `[]` the empty list; any other value as the option's own text. A bad value is reported once at the first hook, by option name or by variable name, and the default used; a bad variable does not fall back to the plugin's setting.
 
-| Option | Default | What it does |
-| --- | --- | --- |
-| `floor` | `medium` | Lowest effort a steered agent is sent. `effortControl.floor` overrides it. |
-| `ceiling` | `xhigh` | Highest effort a steered agent is sent. `effortControl.ceiling` overrides it. |
-| `parentTag` | `honor` | `honor`: a tag on the Agent prompt wins over the `effort:` of the agent's definition, and a steered agent starts at the tag held within its floor and ceiling. `ignore`: the definition's `effort:` keeps and the tag is ignored. `effortControl.parentTag` overrides it. |
-| `models` | `claude-opus-5-5`<br>`claude-fable-5-1`<br>`claude-sonnet-5-5` | Model id prefixes that are steered; `claude-opus-5-5` also matches `claude-opus-5-5[1m]`. Any other model passes untouched. |
-| `judge` | `false` | Ask the judge at a tripwire; off raises one step mechanically. `effortControl.judge` overrides it. |
-| `judgeRaiseAt` | `25` | With the judge on: a probability (0 to 100) at or above this raises the effort one step; below it the effort holds. |
-| `tripwires` | `fail1,fail2,red,redispatch` | The armed tripwires, comma-separated: `fail1` (the first failing test run), `fail2` (the 2nd in a row, then every even count), `red` (a sub-agent returned red), `redispatch` (a red result sent back). A disarmed one is still counted and read by the judge but raises nothing; empty arms none. `effortControl.tripwires` overrides it. |
-| `struggleDecay` | `20` | Requests a steered agent's raised effort may go without a new tripwire before it comes home: the struggle ends, and the open red returns and the failure streak are cleared. A later tripwire opens a new one. `0` turns it off. `effortControl.struggleDecay` overrides it. |
-| `judgeModel` | `haiku` | The judge call's model. |
-| `judgeEffort` | `xhigh` | The judge call's own effort. |
-| `judgeTimeoutMs` | `45000` | Milliseconds before an unanswered judge call is dropped and the effort rises one step. |
-| `mainChat` | `reader` | Steering of the main chat: `off` leaves it untouched, `tripwires` steers it like a steered agent at the level each request asks for, `reader` also lets the prompt reader set the level at each new prompt ([Main chat](#-main-chat)). |
-| `casebookFile` | `~/.local/state/effort-live-control/casebook.jsonl` | The prompt reader's casebook, JSONL, one past turn per line; a leading `~` is your home directory. Missing or unreadable: the reader uses a small invented casebook shipped with the plugin; an existing empty file, or an empty value, runs it without one. |
-| `promptModel` | `haiku` | The prompt reader's model. |
-| `promptEffort` | `xhigh` | The prompt reader call's own effort. |
-| `promptTimeoutMs` | `10000` | Milliseconds before an unanswered reader call is dropped and the turn goes at the level its first request asks for. |
-| `buttons` | `true` | Register the `effort_up` and `effort_down` tools. |
-| `announce` | `true` | Tell a steered agent, in its next tool result, when its effort changes. |
-| `testCommandPatterns` | `\bgo\s+(-C\s+\S+\s+)?test\b`<br>`\b(npm\|pnpm\|yarn\|bun)\s+(run\s+)?test\b`<br>`\bvitest\b`<br>`\bjest\b`<br>`\bpytest\b`<br>`\bpython(\d(\.\d+)?)?\s+-m\s+unittest\b`<br>`\bnode\s+(--test\|--test-only)\b`<br>`\bcargo\s+(test\|nextest)\b`<br>`\bmake\b[^;&\|\n]*?\b(test\|check\|verify)\b`<br>`\bjust\b[^;&\|\n]*?\b(test\|check)\b`<br>`\b(mvn\|gradle\|gradlew)\b[^;&\|\n]*?\btest\b`<br>`\bdotnet\s+test\b`<br>`\bdeno\s+test\b`<br>`\bswift\s+test\b`<br>`\bmix\s+test\b`<br>`\b(rspec\|phpunit\|ctest\|tox\|nox)\b`<br>`\bscripts?/test[\w.-]*\.sh\b` | Regular expressions (case-sensitive); a foreground Bash call is a test run when a command it runs matches any (never a heredoc body, see `readOnlyCommands`). |
-| `readOnlyCommands` | `cat`<br>`grep`<br>`egrep`<br>`fgrep`<br>`rg`<br>`ag`<br>`ack`<br>`echo`<br>`printf`<br>`sed`<br>`awk`<br>`head`<br>`tail`<br>`less`<br>`more`<br>`ls`<br>`find`<br>`fd`<br>`git`<br>`wc`<br>`which`<br>`type`<br>`man`<br>`file`<br>`stat`<br>`diff`<br>`jq`<br>`yq`<br>`sort`<br>`uniq`<br>`cut`<br>`tr`<br>`tee`<br>`test`<br>`[`<br>`[[`<br>`cd`<br>`pushd`<br>`popd`<br>`mkdir`<br>`rm`<br>`cp`<br>`mv`<br>`touch`<br>`chmod`<br>`ln`<br>`basename`<br>`dirname`<br>`realpath`<br>`readlink`<br>`date`<br>`sleep`<br>`true`<br>`false`<br>`export`<br>`read`<br>`wait`<br>`kill` | Program names whose commands never count as a test run, whatever they mention: a search, a print, a read, a file operation. A command is split at `;`, `&`, `\|` and newline, and only the segments whose program is not listed are matched against `testCommandPatterns`. `source` and `.` are not listed, because they execute. A foreground Bash call whose every command is listed is also a file read, the only shell call a return line is read from. |
-| `failurePatterns` | `--- FAIL`<br>`FAIL(ED)?`<br>`(?<!\d)[1-9]\d* (failed\|failing)`<br>`AssertionError`<br>`panic:`<br>`Traceback` | Regular expressions (case-sensitive); a test run whose result is an error or matches any fails. |
-| `redWords` | `FAIL`<br>`FAILED`<br>`BLOCKED`<br>`PARTIAL`<br>`SPEC-DRIFT` | Words that open a failed return line. |
-| `greenWords` | `DONE`<br>`PASS`<br>`FIXED` | Words that open a return line that clears an earlier red one. |
-| `agentDirs` | *(none)* | Extra directories searched for agent definitions, after the project, config and home `.claude/agents`. |
-| `logFile` | `~/.local/state/effort-live-control/decisions.jsonl` | The decision log, one file per session (session id before the extension); a leading `~` is your home directory; empty turns it off. |
-| `logPackets` | `false` | Put the judge's and the prompt reader's snapshot and answer in their log rows. |
+| Option | Environment variable | Default | What it does |
+| --- | --- | --- | --- |
+| `floor` | `EFFORT_LIVE_CONTROL_FLOOR` | `medium` | Lowest effort a steered agent is sent. `effortControl.floor` overrides it. |
+| `ceiling` | `EFFORT_LIVE_CONTROL_CEILING` | `xhigh` | Highest effort a steered agent is sent. `effortControl.ceiling` overrides it. |
+| `parentTag` | `EFFORT_LIVE_CONTROL_PARENT_TAG` | `honor` | `honor`: a tag on the Agent prompt wins over the `effort:` of the agent's definition, and a steered agent starts at the tag held within its floor and ceiling. `ignore`: the definition's `effort:` keeps and the tag is ignored. `effortControl.parentTag` overrides it. |
+| `models` | `EFFORT_LIVE_CONTROL_MODELS` | `claude-opus-5-5`<br>`claude-fable-5-1`<br>`claude-sonnet-5-5` | Model id prefixes that are steered; `claude-opus-5-5` also matches `claude-opus-5-5[1m]`. Any other model passes untouched. |
+| `judge` | `EFFORT_LIVE_CONTROL_JUDGE` | `false` | Ask the judge at a tripwire; off raises one step mechanically. `effortControl.judge` overrides it. |
+| `judgeRaiseAt` | `EFFORT_LIVE_CONTROL_JUDGE_RAISE_AT` | `25` | With the judge on: a probability (0 to 100) at or above this raises the effort one step; below it the effort holds. |
+| `tripwires` | `EFFORT_LIVE_CONTROL_TRIPWIRES` | `fail1,fail2,red,redispatch` | The armed tripwires, comma-separated: `fail1` (the first failing test run), `fail2` (the 2nd in a row, then every even count), `red` (a sub-agent returned red), `redispatch` (a red result sent back). A disarmed one is still counted and read by the judge but raises nothing; an empty option arms none (a blank variable counts as unset). `effortControl.tripwires` overrides it. |
+| `struggleDecay` | `EFFORT_LIVE_CONTROL_STRUGGLE_DECAY` | `20` | Requests a steered agent's raised effort may go without a new tripwire before it comes home: the struggle ends, and the open red returns and the failure streak are cleared. A later tripwire opens a new one. `0` turns it off. `effortControl.struggleDecay` overrides it. |
+| `judgeModel` | `EFFORT_LIVE_CONTROL_JUDGE_MODEL` | `haiku` | The judge call's model. |
+| `judgeEffort` | `EFFORT_LIVE_CONTROL_JUDGE_EFFORT` | `xhigh` | The judge call's own effort. |
+| `judgeTimeoutMs` | `EFFORT_LIVE_CONTROL_JUDGE_TIMEOUT_MS` | `45000` | Milliseconds before an unanswered judge call is dropped and the effort rises one step. |
+| `mainChat` | `EFFORT_LIVE_CONTROL_MAIN_CHAT` | `reader` | Steering of the main chat: `off` leaves it untouched, `tripwires` steers it like a steered agent at the level each request asks for, `reader` also lets the prompt reader set the level at each new prompt ([Main chat](#-main-chat)). |
+| `casebookFile` | `EFFORT_LIVE_CONTROL_CASEBOOK_FILE` | `~/.local/state/effort-live-control/casebook.jsonl` | The prompt reader's casebook, JSONL, one past turn per line; a leading `~` is your home directory. Missing or unreadable: the reader uses a small invented casebook shipped with the plugin; an existing empty file, or an empty option, runs it without one (a blank variable counts as unset). |
+| `promptModel` | `EFFORT_LIVE_CONTROL_PROMPT_MODEL` | `haiku` | The prompt reader's model. |
+| `promptEffort` | `EFFORT_LIVE_CONTROL_PROMPT_EFFORT` | `xhigh` | The prompt reader call's own effort. |
+| `promptTimeoutMs` | `EFFORT_LIVE_CONTROL_PROMPT_TIMEOUT_MS` | `10000` | Milliseconds before an unanswered reader call is dropped and the turn goes at the level its first request asks for. |
+| `buttons` | `EFFORT_LIVE_CONTROL_BUTTONS` | `true` | Register the `effort_up` and `effort_down` tools. |
+| `announce` | `EFFORT_LIVE_CONTROL_ANNOUNCE` | `true` | Tell a steered agent, in its next tool result, when its effort changes. |
+| `testCommandPatterns` | `EFFORT_LIVE_CONTROL_TEST_COMMAND_PATTERNS` | `\bgo\s+(-C\s+\S+\s+)?test\b`<br>`\b(npm\|pnpm\|yarn\|bun)\s+(run\s+)?test\b`<br>`\bvitest\b`<br>`\bjest\b`<br>`\bpytest\b`<br>`\bpython(\d(\.\d+)?)?\s+-m\s+unittest\b`<br>`\bnode\s+(--test\|--test-only)\b`<br>`\bcargo\s+(test\|nextest)\b`<br>`\bmake\b[^;&\|\n]*?\b(test\|check\|verify)\b`<br>`\bjust\b[^;&\|\n]*?\b(test\|check)\b`<br>`\b(mvn\|gradle\|gradlew)\b[^;&\|\n]*?\btest\b`<br>`\bdotnet\s+test\b`<br>`\bdeno\s+test\b`<br>`\bswift\s+test\b`<br>`\bmix\s+test\b`<br>`\b(rspec\|phpunit\|ctest\|tox\|nox)\b`<br>`\bscripts?/test[\w.-]*\.sh\b` | Regular expressions (case-sensitive); a foreground Bash call is a test run when a command it runs matches any (never a heredoc body, see `readOnlyCommands`). |
+| `readOnlyCommands` | `EFFORT_LIVE_CONTROL_READ_ONLY_COMMANDS` | `cat`<br>`grep`<br>`egrep`<br>`fgrep`<br>`rg`<br>`ag`<br>`ack`<br>`echo`<br>`printf`<br>`sed`<br>`awk`<br>`head`<br>`tail`<br>`less`<br>`more`<br>`ls`<br>`find`<br>`fd`<br>`git`<br>`wc`<br>`which`<br>`type`<br>`man`<br>`file`<br>`stat`<br>`diff`<br>`jq`<br>`yq`<br>`sort`<br>`uniq`<br>`cut`<br>`tr`<br>`tee`<br>`test`<br>`[`<br>`[[`<br>`cd`<br>`pushd`<br>`popd`<br>`mkdir`<br>`rm`<br>`cp`<br>`mv`<br>`touch`<br>`chmod`<br>`ln`<br>`basename`<br>`dirname`<br>`realpath`<br>`readlink`<br>`date`<br>`sleep`<br>`true`<br>`false`<br>`export`<br>`read`<br>`wait`<br>`kill` | Program names whose commands never count as a test run, whatever they mention: a search, a print, a read, a file operation. A command is split at `;`, `&`, `\|` and newline, and only the segments whose program is not listed are matched against `testCommandPatterns`. `source` and `.` are not listed, because they execute. A foreground Bash call whose every command is listed is also a file read, the only shell call a return line is read from. |
+| `failurePatterns` | `EFFORT_LIVE_CONTROL_FAILURE_PATTERNS` | `--- FAIL`<br>`FAIL(ED)?`<br>`(?<!\d)[1-9]\d* (failed\|failing)`<br>`AssertionError`<br>`panic:`<br>`Traceback` | Regular expressions (case-sensitive); a test run whose result is an error or matches any fails. |
+| `redWords` | `EFFORT_LIVE_CONTROL_RED_WORDS` | `FAIL`<br>`FAILED`<br>`BLOCKED`<br>`PARTIAL`<br>`SPEC-DRIFT` | Words that open a failed return line. |
+| `greenWords` | `EFFORT_LIVE_CONTROL_GREEN_WORDS` | `DONE`<br>`PASS`<br>`FIXED` | Words that open a return line that clears an earlier red one. |
+| `agentDirs` | `EFFORT_LIVE_CONTROL_AGENT_DIRS` | *(none)* | Extra directories searched for agent definitions, after the project, config and home `.claude/agents`. |
+| `logFile` | `EFFORT_LIVE_CONTROL_LOG_FILE` | `~/.local/state/effort-live-control/decisions.jsonl` | The decision log, one file per session (session id before the extension); a leading `~` is your home directory; an empty option turns it off (a blank variable counts as unset). |
+| `logPackets` | `EFFORT_LIVE_CONTROL_LOG_PACKETS` | `false` | Put the judge's and the prompt reader's snapshot and answer in their log rows. |
 
 ## 📜 Decision log
 
-`logFile` holds one JSONL file per session, the newest 5,000 rows. Every row has `ts`, `event`, `agent` (an id, or `main`) and `type`. Rows: `step` for every steered request (`model`, `requested`, `sent`, `struggle`), `tag` (`tag`, `effort`; `home` and `clamped` for a steered agent), `tag-ignored`, `judge` (`tripwire`, `p`, `from`, `to`, `reason`, `ms`, `usage`), `judge-failed`, `judge-stale`, `judge-busy`, `mechanical` (`tripwire`, `from`, `to`; `busy` when it replaced a stale judge call), `resolved` (`from`, `to`, `requests`, `why`: `resolved` or `decay`), `landing`, `button`, `button-refused`, `model-gated`, `not-steered`, `end`, and option, tool-registration and resolution errors. The main chat adds `prompt` (`p`, `level`, `home`, `ms`, `usage`, `casebook`: core rows shown, `casebookSource`: `file` or `bundled`, `precedents`; `casebookError` when the file could not be read) and, when the reader gave no decision, `reader-timeout`, `reader-failed` (`error`), `reader-unparsed` and `reader-gated` (a model outside `models`); its steered requests are `step` rows with `agent: main`. No prompt, brief, reply or tool-result text is written, except the judge's and the reader's `packet` and `answer` when `logPackets` is on.
+`logFile` holds one JSONL file per session, the newest 5,000 rows. Every row has `ts`, `event`, `agent` (an id, or `main`) and `type`. Rows: `step` for every steered request (`model`, `requested`, `sent`, `struggle`), `tag` (`tag`, `effort`; `home` and `clamped` for a steered agent), `tag-ignored`, `judge` (`tripwire`, `p`, `from`, `to`, `reason`, `ms`, `usage`), `judge-failed`, `judge-stale`, `judge-busy`, `mechanical` (`tripwire`, `from`, `to`; `busy` when it replaced a stale judge call), `resolved` (`from`, `to`, `requests`, `why`: `resolved` or `decay`), `landing`, `button`, `button-refused`, `model-gated`, `not-steered`, `end`, `plugin-log-failed` (`error`: a level-log append failed, once per failing streak), and option, tool-registration and resolution errors. The main chat adds `prompt` (`p`, `level`, `home`, `ms`, `usage`, `casebook`: core rows shown, `casebookSource`: `file` or `bundled`, `precedents`; `casebookError` when the file could not be read) and, when the reader gave no decision, `reader-timeout`, `reader-failed` (`error`), `reader-unparsed` and `reader-gated` (a model outside `models`); its steered requests are `step` rows with `agent: main`. No prompt, brief, reply or tool-result text is written, except the judge's and the reader's `packet` and `answer` when `logPackets` is on.
+
+## Logs
+
+Errors, warnings and effort changes are also appended to `errors.jsonl`, `warnings.jsonl` and `info.jsonl` under `$PLUGIN_LOG_DIR/effort-live-control/`. Without `PLUGIN_LOG_DIR`, they use `$HOME/.local/state/effort-live-control/logs/`. Rows contain timestamps, event names, stable code locations and optional session ids; no prompt, transcript or tool-input bodies are added to these files, even with `logPackets` enabled.
+
+Rows are capped at 4096 bytes. A level file over 20 MiB moves to `.1` and emits a `log-capped` warning. Directories and files are created privately. A failed append gives one screen notice and one `plugin-log-failed` decision row per failing streak, re-armed after a successful write, without changing the plugin's result. Appending needs the CLI's `$.process.run` and `/bin/sh`; when unavailable, the screen notice names the failure.
 
 ## ❓ FAQ
 
@@ -210,6 +216,7 @@ A live run loads the checkout with `claude --plugin-dir plugins/effort-live-cont
 | `src/bundled-casebook.ts` | The invented casebook the reader uses until the user writes their own |
 | `src/text.ts` | The texts the model reads from the buttons and announcements |
 | `src/log.ts` | The decision log's file path and row cap |
+| `src/plugin-log.ts` | The append-only level files, row cap and serialized writer |
 | `hooks/effort-live-control.ts` | The adapter: the hooks, host state and the log, and the only file that touches `$` |
 | `contract.d.ts` | The host-state contract: one pin per agent id |
 

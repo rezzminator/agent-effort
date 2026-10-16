@@ -1,4 +1,10 @@
-import { describe as suite, expect, it } from 'vitest';
+import { afterEach, describe as suite, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Controller } from '../plugins/effort-live-control/src/control.ts';
 import { register } from '../plugins/effort-live-control/hooks/effort-live-control.ts';
 import { BUNDLED_CASEBOOK } from '../plugins/effort-live-control/src/bundled-casebook.ts';
 
@@ -15,8 +21,14 @@ function deferred<T>() {
 type Opts = {
   /** Files the stand-in file system holds: absolute path → text. */
   files?: Record<string, string>;
+  /** A write lands only after a timer turn, as a real disk write does: what is not awaited is not on disk. */
+  slowWrite?: boolean;
+  /** The screen door throws, as an engine without a UI may. */
+  uiThrows?: boolean;
   options?: Record<string, unknown>;
-  env?: Record<string, string>;
+  env?: Record<string, string | undefined>;
+  run?: (argv: readonly string[], init?: { timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  noProcess?: boolean;
   /** Paths whose read throws. */
   broken?: string[];
   /** The main loop's model, as `$.session.model()` answers. */
@@ -30,7 +42,7 @@ type Opts = {
 function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
   const files = new Map<string, string>(Object.entries(opts.files ?? {}));
   const mtimes = new Map<string, number>();
-  const env: Record<string, string> = { HOME: '/fixture-home/t', ...(opts.env ?? {}) };
+  const env: Record<string, string | undefined> = { HOME: '/fixture-home/t', ...(opts.env ?? {}) };
   const judgeCalls: Array<{ request: any; resolve: (value: any) => void; reject: (error: unknown) => void }> = [];
   const registered: any[] = [];
   const statuses = new Map<string, string>();
@@ -44,6 +56,7 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
     },
     // A sleep the test fires; its signal aborting rejects it and drops its timer.
     clock: {
+      now: async () => 1791991231123,
       sleep: (_ms: number, options?: { signal?: AbortSignal }) =>
         new Promise<void>((resolve, reject) => {
           const signal = options?.signal;
@@ -54,7 +67,8 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
           signal?.addEventListener('abort', cancel, { once: true });
         }),
     },
-    ui: { log: (line: string) => logs.push(line) },
+    ui: { log: (line: string) => { if (opts.uiThrows) throw new Error('no screen'); logs.push(line); } },
+    ...(opts.noProcess ? {} : { process: { run: opts.run ?? (async () => ({ exitCode: 0, stdout: '', stderr: '' })) } }),
     agent: { list: async () => [...statuses].map(([id, status]) => ({ id, status, type: 'general-purpose', description: '' })) },
     fs: {
       exists: async (path: string) => files.has(path) || [...files.keys()].some((file) => file.startsWith(path.replace(/\/$/, '') + '/')),
@@ -64,7 +78,10 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
         if (text === undefined) throw new Error('ENOENT');
         return text;
       },
-      write: async (path: string, text: string) => void (files.set(path, text), mtimes.set(path, (mtimes.get(path) ?? 0) + 1)),
+      write: async (path: string, text: string) => {
+        if (opts.slowWrite) await new Promise((resolve) => setTimeout(resolve, 5));
+        files.set(path, text); mtimes.set(path, (mtimes.get(path) ?? 0) + 1);
+      },
       stat: async (path: string) => {
         if (!files.has(path)) throw new Error(`ENOENT: no such file or directory, stat '${path}'`);
         return { kind: 'file', size: 0, mtimeMs: mtimes.get(path) ?? 0, isLink: false };
@@ -166,7 +183,8 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
     const text = files.get('/fixture-home/t/.local/state/effort-live-control/decisions.sess1.jsonl') ?? '';
     return text.split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as Record<string, any>);
   };
-  return { state, statuses, touch, step, mainStep, prompt, completeMain, spawn, spawned, complete, tool, sessionStart, describeTool, fireTimers, tick, logs, timers, files, judgeCalls, registered, rows };
+  const sessionEnd = async (next = async () => ({})) => { if (hooks.has('session.end')) await hooks.get('session.end')!($, {}, next); };
+  return { $, state, statuses, touch, step, mainStep, prompt, completeMain, spawn, spawned, complete, tool, sessionStart, sessionEnd, describeTool, fireTimers, tick, logs, timers, files, judgeCalls, registered, rows };
 }
 
 suite('agent.spawn', () => {
@@ -1339,6 +1357,74 @@ suite('main chat: the prompt reader', () => {
     expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'reader-timeout', agent: 'main', casebook: 36, casebookSource: 'bundled', precedents: 0 }));
   });
 
+  it.each([
+    { name: 'default denial recovers on the current model', options: {}, status: 403, error: 'oauth_org_not_allowed', denied: false, models: ['haiku', OPUS, OPUS], effort: 'high', disabled: false },
+    { name: 'both routes denied degrades once', options: {}, status: 403, error: 'oauth_org_not_allowed', denied: true, models: ['haiku', OPUS], effort: 'medium', disabled: true },
+    { name: 'explicit nondefault model is preserved', options: { promptModel: 'sonnet' }, status: 403, error: 'oauth_org_not_allowed', denied: true, models: ['sonnet', 'sonnet'], effort: 'medium', disabled: false },
+    { name: 'transient failure does not change route', options: {}, status: 529, error: 'overloaded', denied: false, models: ['haiku', 'haiku'], effort: 'medium', disabled: false },
+    { name: 'other 403 does not change route', options: {}, status: 403, error: 'permission_denied', denied: false, models: ['haiku', 'haiku'], effort: 'medium', disabled: false },
+    { name: 'same error at 401 does not change route', options: {}, status: 401, error: 'oauth_org_not_allowed', denied: false, models: ['haiku', 'haiku'], effort: 'medium', disabled: false },
+  ])('reader model route: $name', async ({ options, status, error, denied, models, effort, disabled }) => {
+    const { x, calls, script } = withReader(options);
+    script.next = () => calls.at(-1).model === OPUS && !denied
+      ? say('0.05 0.90 0.05')
+      : { isAnswered: false, reason: 'api-error', status, error, usage: USAGE };
+    await x.prompt('one');
+    expect(await x.mainStep('medium', 't1')).toBe(effort);
+    await x.completeMain('done', 't1');
+    await x.prompt('two');
+    expect(await x.mainStep('medium', 't2')).toBe(effort);
+    expect(calls.map((call) => call.model)).toEqual(models);
+    expect(x.logs.filter((line) => line.includes('model judgment unavailable for this session'))).toHaveLength(disabled ? 1 : 0);
+  });
+
+  it('keeps an explicit judge live after the default reader becomes unavailable', async () => {
+    const { x, calls, script } = withReader({ judge: true, judgeModel: 'sonnet' }, { files: LEAD });
+    script.next = () => calls.at(-1).model === 'sonnet'
+      ? say('90 - stuck')
+      : { isAnswered: false, reason: 'api-error', status: 403, error: 'oauth_org_not_allowed', usage: USAGE };
+    await x.prompt('one');
+    expect(await x.mainStep('medium')).toBe('medium');
+    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
+    await x.tool('L1', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    await x.tick();
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'judge', p: 90 }));
+    expect(calls.map((call) => call.model)).toEqual(['haiku', OPUS, 'sonnet']);
+    expect(x.logs.filter((line) => line.includes('model judgment unavailable for this session'))).toHaveLength(1);
+  });
+
+  it.each([{ denied: false, judgeFirst: false, concurrent: false }, { denied: true, judgeFirst: false, concurrent: false }, { denied: false, judgeFirst: true, concurrent: false }, { denied: true, judgeFirst: true, concurrent: false }, { denied: false, judgeFirst: false, concurrent: true }])('reader and judge share the default fallback (denied=$denied, judgeFirst=$judgeFirst, concurrent=$concurrent)', async ({ denied, judgeFirst, concurrent }) => {
+    const { x, calls, script } = withReader({ judge: true }, { files: LEAD });
+    const pending = [deferred<unknown>(), deferred<unknown>()];
+    const refusal = { isAnswered: false, reason: 'api-error', status: 403, error: 'oauth_org_not_allowed', usage: USAGE };
+    script.next = () => concurrent && calls.at(-1).model === 'haiku'
+      ? pending[calls.length - 1]!.promise
+      : calls.at(-1).model === OPUS && !denied
+      ? say(calls.at(-1).system ? '90 - stuck' : '0.05 0.90 0.05')
+      : { isAnswered: false, reason: 'api-error', status: 403, error: 'oauth_org_not_allowed', usage: USAGE };
+    const prompt = !judgeFirst ? x.prompt('one') : undefined;
+    if (concurrent) await x.tick();
+    else await prompt;
+    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
+    await x.tool('L1', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    if (concurrent) {
+      expect(calls.map((call) => call.model)).toEqual(['haiku', 'haiku']);
+      pending[0]!.resolve(refusal);
+      await prompt;
+      expect(calls.map((call) => call.model)).toEqual(['haiku', 'haiku', OPUS]);
+      pending[1]!.resolve(refusal);
+    }
+    await x.tick();
+    if (judgeFirst) await x.prompt('one');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(calls.map((call) => call.model)).toEqual(concurrent ? ['haiku', 'haiku', OPUS, OPUS] : denied ? ['haiku', OPUS] : ['haiku', OPUS, OPUS]);
+    expect(await x.rows()).toContainEqual(expect.objectContaining(denied
+      ? { event: 'judge-failed', reason: 'model-unavailable' }
+      : { event: 'judge', p: 90 }));
+    expect(x.logs.filter((line) => line.includes('model judgment unavailable for this session'))).toHaveLength(denied ? 1 : 0);
+  });
+
   it('main chat: an API error and a throw send the requested level, with a reader-failed row carrying the error', async () => {
     const { x, script } = withReader();
     script.next = () => ({ isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: USAGE });
@@ -1492,6 +1578,19 @@ suite('main chat: the casebook', () => {
     expect(none.calls[0].prompt).not.toContain('# Casebook');
     expect(none.x.logs).toEqual([]);
   });
+
+  it('main chat: EFFORT_LIVE_CONTROL_MAIN_CHAT=off leaves the chat untouched over a reader option, and the reader is not called', async () => {
+    const { x, calls } = withReader({ mainChat: 'reader' }, { env: { EFFORT_LIVE_CONTROL_MAIN_CHAT: 'off' } });
+    await x.prompt('go');
+    expect(calls).toHaveLength(0);
+    expect(await x.mainStep('low')).toBe('low');
+  });
+
+  it('main chat: EFFORT_LIVE_CONTROL_CASEBOOK_FILE overrides the casebookFile option', async () => {
+    const own = withReader({ casebookFile: '' }, { env: { EFFORT_LIVE_CONTROL_CASEBOOK_FILE: '~/cases.jsonl' }, files: { '/fixture-home/t/cases.jsonl': caseLine() } });
+    await own.x.prompt('go');
+    expect(own.calls[0].prompt).toContain('# Casebook');
+  });
 });
 
 suite('main chat: tripwires mid-turn', () => {
@@ -1614,5 +1713,210 @@ suite('main chat: the modes', () => {
     const { x } = withReader();
     await x.spawned('[effort: low]\nMap X.', 'a1');
     expect(await x.step('a1', 'high')).toBe('low');
+  });
+});
+
+suite('plugin log adapter', () => {
+  const exec = promisify(execFile);
+  const dirs: string[] = [];
+  const fresh = async () => { const dir = await mkdtemp(join(tmpdir(), 'effort-plugin-log-')); dirs.push(dir); return dir; };
+  afterEach(async () => { vi.restoreAllMocks(); await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
+  const realRun: NonNullable<Opts['run']> = async (argv, init) => {
+    try { const result = await exec('/bin/sh', argv.slice(1), { timeout: init?.timeoutMs }); return { exitCode: 0, ...result }; }
+    catch (error: any) { return { exitCode: error.code ?? 1, stdout: error.stdout ?? '', stderr: error.stderr ?? String(error) }; }
+  };
+  const readRows = async (dir: string, file: string) => {
+    let text: string;
+    try { text = await readFile(join(dir, file), 'utf8'); }
+    catch (error: any) { if (error.code === 'ENOENT') return []; throw error; }
+    return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  };
+
+  it.each(['PLUGIN_LOG_DIR', 'fallback'])('writes forced error and warning through %s without changing answers', async (source) => {
+    const dir = await fresh();
+    const x = engine(undefined, { env: { HOME: dir, PLUGIN_LOG_DIR: source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels') : undefined }, run: realRun, options: { mainChat: 'tripwires', floor: 'invalid', logFile: '' } });
+    await x.sessionStart(); await x.sessionStart();
+    expect(await x.mainStep('medium')).toBe('medium');
+    vi.spyOn(Controller.prototype, 'onButton').mockImplementation(() => { throw new Error('unknown level'); });
+    const result = await x.tool(undefined, 'mcp__effort-live-control__effort_up', {});
+    expect(result.out.result).toBe('Nothing changed: unknown level');
+    expect(result.called).toBe(false);
+    await x.sessionEnd();
+    const target = source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels/effort-live-control') : join(dir, '.local/state/effort-live-control/logs');
+    expect(await readRows(target, 'errors.jsonl')).toEqual([expect.objectContaining({ ts: '2026-10-14T15:20:31.123Z', plugin: 'effort-live-control', level: 'error', event: 'answer-tool-failed', where: 'hooks/effort-live-control.ts#answerButton', session: 'sess1' })]);
+    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ level: 'warning', event: 'option-error', where: 'hooks/effort-live-control.ts#start' }));
+    expect(x.logs).toContain('effort-live-control: answering mcp__effort-live-control__effort_up failed: unknown level; nothing changed');
+  });
+
+  it.each([
+    { level: 'error', file: 'errors.jsonl', event: 'answer-tool-failed', component: 'answerButton', cause: 'unknown level' },
+    { level: 'warning', file: 'warnings.jsonl', event: 'pin-unreadable', component: 'readPin', cause: 'pin store offline' },
+  ])('queues $event before a throwing screen call', async ({ level, file, event, component, cause }) => {
+    const dir = await fresh();
+    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, options: { mainChat: 'tripwires', logFile: '', casebookFile: '' } });
+    await x.sessionStart(); await x.mainStep('medium');
+    x.$.ui.log = () => { throw new Error('screen offline'); };
+    if (level === 'error') vi.spyOn(Controller.prototype, 'onButton').mockImplementation(() => { throw new Error(cause); });
+    else x.$.state.get = async () => { throw new Error(cause); };
+    await expect(level === 'error' ? x.tool(undefined, 'mcp__effort-live-control__effort_up', {}) : x.step('unknown', 'medium')).rejects.toThrow('screen offline');
+    await x.sessionEnd();
+    expect(await readRows(join(dir, 'effort-live-control'), file)).toContainEqual(expect.objectContaining({
+      plugin: 'effort-live-control', level, event, where: `hooks/effort-live-control.ts#${component}`, session: 'sess1', msg: expect.stringContaining(cause),
+    }));
+  });
+
+  it('reports one process rejection per failing streak, then rearms after a successful real write', async () => {
+    const dir = await fresh();
+    let broken = true;
+    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, options: { mainChat: 'tripwires', logFile: '' }, run: async (argv, init) => { if (broken) throw new Error('spawn denied'); return realRun(argv, init); } });
+    await x.sessionStart(); await x.sessionEnd();
+    vi.spyOn(Controller.prototype, 'onButton').mockImplementation(() => { throw new Error('unknown level'); });
+    await x.mainStep('medium');
+    await x.tool(undefined, 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
+    const notices = () => x.logs.filter((line) => line.includes('plugin log'));
+    expect(notices()).toHaveLength(1); expect(notices()[0]).toContain(join(dir, 'effort-live-control')); expect(notices()[0]).toContain('spawn denied');
+    broken = false;
+    await x.tool(undefined, 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
+    expect(await readRows(join(dir, 'effort-live-control'), 'errors.jsonl')).toHaveLength(1);
+    broken = true;
+    await x.tool(undefined, 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
+    expect(notices()).toHaveLength(2);
+  });
+
+  it('a failing plugin-log write also reaches the decision log, once per failing streak', async () => {
+    // The invalid floor's option-error warning is the level-log write that fails.
+    const x = engine(undefined, { slowWrite: true, env: { PLUGIN_LOG_DIR: '/fixture-logs' }, options: { floor: 'invalid', logFile: '/fixture-home/t/elc.jsonl' }, run: async () => ({ exitCode: 1, stdout: '', stderr: 'chmod: --: No such file or directory' }) });
+    await x.sessionStart(); await x.sessionEnd();
+    // No tick after session.end: the row the final flush queues is on disk when the session ends.
+    const text = x.files.get('/fixture-home/t/elc.sess1.jsonl') ?? '';
+    const failed = text.split('\n').filter(Boolean).map((line) => JSON.parse(line)).filter((row) => row.event === 'plugin-log-failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].error).toContain('chmod: --: No such file or directory');
+    expect(x.logs.filter((line) => line.includes('plugin log'))).toHaveLength(1);
+  });
+
+  it('session.end still ends when the decision-log write fails and the screen door throws', async () => {
+    const path = '/fixture-home/t/elc.sess1.jsonl';
+    const x = engine(undefined, { uiThrows: true, broken: [path], files: { [path]: '' }, env: { PLUGIN_LOG_DIR: '/fixture-logs' }, options: { logFile: '/fixture-home/t/elc.jsonl' } });
+    await x.sessionStart();
+    let ended = false;
+    await x.sessionEnd(async () => { ended = true; return {}; });
+    expect(ended).toBe(true);
+  });
+
+  it.each(['no-process', 'no-home'])('keeps work unchanged and gives visible logger fallback for %s', async (mode) => {
+    const dir = await fresh();
+    const x = engine(undefined, { env: mode === 'no-home' ? { HOME: undefined, PLUGIN_LOG_DIR: undefined } : { PLUGIN_LOG_DIR: dir }, noProcess: mode === 'no-process', options: { floor: 'invalid', logFile: '', mainChat: 'tripwires', casebookFile: '' } });
+    await x.sessionStart(); expect(await x.mainStep('medium')).toBe('medium'); await x.sessionEnd();
+    const notice = x.logs.filter((line) => line.includes('plugin log'));
+    expect(notice).toHaveLength(1);
+    expect(notice[0]).toContain(mode === 'no-home' ? 'plugin log off: no PLUGIN_LOG_DIR and no HOME' : join(dir, 'effort-live-control'));
+    if (mode === 'no-process') expect(notice[0]).toContain('process');
+  });
+
+  it.each(['HOME', 'PLUGIN_LOG_DIR'])('does not render a rejected %s read as ordinary absence', async (name) => {
+    const dir = await fresh();
+    const env: Record<string, string | undefined> = { HOME: dir, PLUGIN_LOG_DIR: join(dir, 'levels') };
+    const x = engine(undefined, { env, run: realRun, options: { logFile: '', casebookFile: '' } });
+    x.$.env.get = async (key) => { if (key === name) throw undefined; return env[key]; };
+    await x.sessionStart(); await x.sessionEnd();
+    const target = name === 'HOME' ? join(dir, 'levels/effort-live-control') : join(dir, '.local/state/effort-live-control/logs');
+    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: name === 'HOME' ? 'home-missing' : 'plugin-log-dir-unreadable', msg: expect.stringContaining('failed: undefined') }));
+  });
+
+  it('logs unreadable pins, judge fallback and actual effort changes without decision packets', async () => {
+    const dir = await fresh();
+    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, options: { mainChat: 'tripwires', judge: true, logFile: '', logPackets: true } });
+    await x.sessionStart();
+    x.$.state.get = async () => { throw new Error('pin store offline'); };
+    expect(await x.step('unknown', 'medium')).toBe('medium');
+    await x.mainStep('medium');
+    await x.tool(undefined, 'Bash', { command: 'npm test', tool_input: { command: 'npm test' } }, { text: 'private test body', isError: true });
+    expect(x.judgeCalls).toHaveLength(1);
+    x.judgeCalls[0]!.resolve({ isAnswered: false, reason: 'aborted' });
+    await x.tick(); await x.sessionEnd();
+    const target = join(dir, 'effort-live-control');
+    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: 'pin-unreadable', level: 'warning' }));
+    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: 'judge-failed', level: 'warning', where: 'src/control.ts#failed' }));
+    expect(await readRows(target, 'info.jsonl')).toContainEqual(expect.objectContaining({ event: 'effort-steered', detail: { agent: 'main', from: 'medium', to: 'high' } }));
+    const text = JSON.stringify(await readRows(target, 'warnings.jsonl'));
+    expect(text).not.toContain('private test body');
+    expect(await x.mainStep('medium')).toBe('high'); await x.sessionEnd();
+  });
+});
+
+suite('environment variables', () => {
+  // Every option has its own EFFORT_LIVE_CONTROL_{OPTION} variable; a bad value names it in the first hook's report.
+  const BAD: Array<[name: string, bad: string]> = [
+    ['EFFORT_LIVE_CONTROL_FLOOR', 'sideways'],
+    ['EFFORT_LIVE_CONTROL_CEILING', 'sideways'],
+    ['EFFORT_LIVE_CONTROL_PARENT_TAG', 'maybe'],
+    ['EFFORT_LIVE_CONTROL_MODELS', 'not json'],
+    ['EFFORT_LIVE_CONTROL_JUDGE', 'maybe'],
+    ['EFFORT_LIVE_CONTROL_JUDGE_RAISE_AT', '101'],
+    ['EFFORT_LIVE_CONTROL_TRIPWIRES', 'bogus'],
+    ['EFFORT_LIVE_CONTROL_STRUGGLE_DECAY', '-1'],
+    ['EFFORT_LIVE_CONTROL_JUDGE_MODEL', 'two words'],
+    ['EFFORT_LIVE_CONTROL_JUDGE_EFFORT', 'ultra'],
+    ['EFFORT_LIVE_CONTROL_JUDGE_TIMEOUT_MS', '0'],
+    ['EFFORT_LIVE_CONTROL_MAIN_CHAT', 'sometimes'],
+    ['EFFORT_LIVE_CONTROL_PROMPT_MODEL', 'two words'],
+    ['EFFORT_LIVE_CONTROL_PROMPT_EFFORT', 'ultra'],
+    ['EFFORT_LIVE_CONTROL_PROMPT_TIMEOUT_MS', 'soon'],
+    ['EFFORT_LIVE_CONTROL_BUTTONS', 'yes'],
+    ['EFFORT_LIVE_CONTROL_ANNOUNCE', 'yes'],
+    ['EFFORT_LIVE_CONTROL_TEST_COMMAND_PATTERNS', '["(unclosed"]'],
+    ['EFFORT_LIVE_CONTROL_READ_ONLY_COMMANDS', '["two words"]'],
+    ['EFFORT_LIVE_CONTROL_FAILURE_PATTERNS', '["(unclosed"]'],
+    ['EFFORT_LIVE_CONTROL_RED_WORDS', '["OK now"]'],
+    ['EFFORT_LIVE_CONTROL_GREEN_WORDS', '[1]'],
+    ['EFFORT_LIVE_CONTROL_AGENT_DIRS', '{"dir":"/x"}'],
+    ['EFFORT_LIVE_CONTROL_LOG_PACKETS', 'yes'],
+  ];
+
+  it.each(BAD)('%s is read, and a bad value is reported by name with the default used', async (name, bad) => {
+    const x = engine(new Map(), { env: { [name]: bad } });
+    await x.sessionStart();
+    expect(x.logs.filter((line) => line.includes(`environment variable ${name} is ${JSON.stringify(bad)}`))).toHaveLength(1);
+    expect(x.logs.filter((line) => line.includes('option "'))).toEqual([]);
+  });
+
+  it('EFFORT_LIVE_CONTROL_LOG_FILE overrides the logFile option', async () => {
+    const x = engine(new Map(), { env: { EFFORT_LIVE_CONTROL_LOG_FILE: '~/logs/env.jsonl' }, options: { logFile: '' } });
+    await x.sessionStart();
+    await x.tick();
+    await x.tick();
+    expect(x.files.has('/fixture-home/t/logs/env.sess1.jsonl')).toBe(true);
+  });
+
+  it('EFFORT_LIVE_CONTROL_BUTTONS decides whether the two tools register, over the buttons option', async () => {
+    const off = engine(new Map(), { env: { EFFORT_LIVE_CONTROL_BUTTONS: '0' }, options: { buttons: true } });
+    await off.sessionStart();
+    expect(off.registered).toEqual([]);
+    const on = engine(new Map(), { env: { EFFORT_LIVE_CONTROL_BUTTONS: ' ' }, options: { buttons: true } });
+    await on.sessionStart();
+    expect(on.registered.map((spec) => spec.name)).toEqual(['effort_up', 'effort_down']);
+    const unset = engine(new Map(), { options: { buttons: false } });
+    await unset.sessionStart();
+    expect(unset.registered).toEqual([]);
+  });
+
+  it('EFFORT_LIVE_CONTROL_PARENT_TAG shapes the Agent tool description before any session start', async () => {
+    const honor = await engine(new Map(), { env: { EFFORT_LIVE_CONTROL_PARENT_TAG: 'honor' }, options: { parentTag: 'ignore' } }).describeTool('Agent', 'Spawns.');
+    const ignore = await engine(new Map(), { env: { EFFORT_LIVE_CONTROL_PARENT_TAG: 'ignore' } }).describeTool('Agent', 'Spawns.');
+    expect(honor.description).not.toBe(ignore.description);
+    expect((await engine(new Map(), { options: { parentTag: 'ignore' } }).describeTool('Agent', 'Spawns.')).description).toBe(ignore.description);
+  });
+
+  it('a variable that cannot be read is reported by name and the option decides', async () => {
+    const x = engine(new Map(), { options: { buttons: false } });
+    const read = x.$.env.get;
+    x.$.env.get = async (name: string) => {
+      if (name === 'EFFORT_LIVE_CONTROL_BUTTONS') throw new Error('env denied');
+      return read(name);
+    };
+    await x.sessionStart();
+    expect(x.registered).toEqual([]);
+    expect(x.logs.join('\n')).toContain('effort-live-control: reading EFFORT_LIVE_CONTROL_BUTTONS failed: env denied; using the option or its default');
   });
 });

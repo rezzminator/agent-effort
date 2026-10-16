@@ -2,6 +2,40 @@
 
 Every release of effort-live-control (named agent-effort through 0.1.3). Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `effort-live-control--v<version>` (`agent-effort--v<version>` through 0.1.3), with a GitHub release carrying the section below.
 
+## [Unreleased]
+
+## [0.3.5] — 2026-10-16
+
+### Added
+- Every option can be set by an environment variable, `EFFORT_LIVE_CONTROL_` and the option name in upper snake case (`EFFORT_LIVE_CONTROL_JUDGE_RAISE_AT` for `judgeRaiseAt`). Precedence: the variable, then the plugin's setting, then the default. A boolean is `1`, `0`, `true` or `false`; a list is a JSON array of strings; an unset or blank variable counts as not set. A bad value is reported by variable name at the first hook and the default is used (a bad variable does not fall back to the plugin's setting). The README options table gains the variable column.
+
+## [0.3.4] — 2026-10-15
+
+### Fixed
+- The plugin level log now writes on macOS: its append script no longer passes `--` to `chmod`, which BSD `chmod` reads as a file name and fails on under `set -eu`, so every flush was dropped. A log directory that starts with a dash is handled as a `./` path instead. The regression tests run the script behind a BSD-style `chmod` shim, so the Linux suite catches it too.
+- A failed plugin-log write also reaches the decision log (event `plugin-log-failed`, once per failing streak), not only the screen.
+
+## [0.3.3] — 2026-10-15
+
+### Fixed
+- The default Haiku judge and prompt reader retry on the session's own model when the organization denies the default; an explicit non-default choice stays authoritative, and both routes denied degrades visibly once.
+
+## [0.3.2] — 2026-10-15
+
+### Fixed
+- Queue diagnostic rows before screen notices so an unavailable screen cannot swallow the level log.
+
+## [0.3.1] — 2026-10-15
+
+### Fixed
+- Plugin log writes support macOS, including hyphen-leading relative log roots.
+
+## [0.3.0] — 2026-10-14
+
+### Added
+- Append-only error, warning and info JSONL files under `PLUGIN_LOG_DIR/effort-live-control`, falling back to `$HOME/.local/state/effort-live-control/logs`. The writer adds stable event locations, private creation modes, a 4096-byte row cap and rename-aside rotation over 20 MiB. Failed writes report once per failing streak without affecting effort control; existing notices and decision logs stay unchanged.
+- Unreadable pins and unavailable judges are visible as warning rows. Applied effort changes are info rows, without prompt, transcript or tool-input bodies.
+
 ## [0.2.0] — 2026-10-12
 
 ### Added

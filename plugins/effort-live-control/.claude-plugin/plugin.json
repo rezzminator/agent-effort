@@ -1,6 +1,6 @@
 {
   "name": "effort-live-control",
-  "version": "0.2.0",
+  "version": "0.3.5",
   "description": "Set each Claude Code sub-agent's reasoning effort per spawn with [effort: low|medium|high|xhigh|max], and let an opted-in agent's effort rise at each failing test run or red sub-task and come home once the trouble resolves.",
   "license": "MIT",
   "author": {
