@@ -4,11 +4,21 @@ Every release of effort-live-control (named agent-effort through 0.1.3). Version
 
 ## [Unreleased]
 
-## [0.3.6-alpha] — 2026-10-17
+## [0.3.6-dev.2] — 2026-10-17
 
 ### Fixed
 - Error diagnostics reach the screen and plugin log; warnings and routine effort-change diagnostics go only to the plugin log while it works. If no directory resolves or writes fail, every unwritten warning and info message falls back to the screen, including later failures in the same streak. The logger's own failure notice stays visible.
 - Invalid settings and failures that prevent pinning, steering, judgment, definition lookup, decision logging or tool registration are errors rather than warnings. Recoverable casebook and model fallbacks remain warnings. Model-facing effort announcements, button replies and spawn refusals are unchanged.
+
+## [0.3.6-dev.1] — 2026-10-17
+
+### Added
+- `effort_auto`, a third button beside `effort_up` and `effort_down` (registered under the same `buttons` option): it hands the caller's effort back to the automatic rules at its home level — its launch level (definition effort or tag, else its first request's), or the main chat's turn home — held within its range; an open struggle then resolves to that level.
+
+### Changed
+- A level set with `effort_up` or `effort_down` now holds: no tripwire, judge answer or failure, resolution, decay, landing step or new main-chat turn moves it until `effort_auto`. A tripwire under the hold is still counted (a `tripwire` row with `held: true`) but asks no judge. A press at a bound holds too and is logged as a `button` row.
+- The main chat, where this plugin does not steer it, is refused with the name of its own effort control — the one session tool ending in `set_effort`, to call with a level or `auto`, else (none, several, a name that is not a tool name, or a tool list that fails or does not answer within 2 s) the user's `/effort` — instead of the sub-agent text about `effortControl`.
+- A press answers for itself: a level-change line an automatic rule left undelivered is dropped, so the next tool result never names a level the agent no longer has. While the agent's last request went to a model outside `models`, each button's answer says the level applies once a steered model answers; while it carried no effort level, that the level applies once a request carries one.
 
 ## [0.3.5] — 2026-10-16
 

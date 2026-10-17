@@ -10,7 +10,7 @@ import { buildReader, CasebookCache, decide, NO_PREVIOUS, parseReaderAnswer, res
 import { compile, envName, resolveSettings, SETTING_KEYS, type Compiled, type OptionEnv, type Settings } from '../src/settings.ts';
 import { isRead, isTestRun, testOutcome } from '../src/signals.ts';
 import { startOf } from '../src/start.ts';
-import { BUTTON_DOWN, BUTTON_UP, REFUSED, type Direction } from '../src/text.ts';
+import { BUTTON_AUTO, BUTTON_DOWN, BUTTON_UP, MAIN_REFUSED, mainEffortToolOf, REFUSED, type Direction } from '../src/text.ts';
 
 // Thin adapter: every decision lives in src/. A failure is logged with its context and
 // the spawn, request or tool call goes through at the effort it already had.
@@ -31,8 +31,12 @@ const MAIN = 'main';
 const BAD_LINES_SHOWN = 20;
 /** The prompts waiting for their turn that are remembered; a prompt that never started one falls off. */
 const WAITING_MAX = 20;
+/** How long an unsteered main chat's button waits for the session's tool list before its refusal names /effort. */
+const TOOL_LIST_WAIT_MS = 2000;
 
 type Fields = Record<string, unknown>;
+/** What a button tool does: one step either way, or back to the automatic rules. */
+type Button = Direction | 'auto';
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -142,7 +146,7 @@ type Runtime = {
   /** Each child agent's id → its steered parent's id. */
   childOf: Map<string, string>;
   /** The full tool names `$.tool.register` returned. */
-  buttons: Map<string, Direction>;
+  buttons: Map<string, Button>;
   /** The main chat's controller, once its first steered request came (never with `mainChat: off`). */
   main: Controller | undefined;
   /** The id of the turn the main controller last saw a request of. */
@@ -526,13 +530,45 @@ function observe(rt: Runtime, $: EngineInterface, controller: Controller, e: Fie
   if (isRead(e.tool, e, rt.compiled.readOnly)) perform(rt, $, controller, controller.onRead(text).actions);
 }
 
-function answerButton(rt: Runtime, $: EngineInterface, agentId: string | undefined, direction: Direction): { result: string } {
+// The session's own tool that sets the main chat's effort, by its listed name (mainEffortToolOf); undefined when none
+// is listed, or when the list fails or does not answer within TOOL_LIST_WAIT_MS, so a button call is never held. The
+// call's abort ends the wait at once, with no timeout logged, and however the wait ends its timer is cancelled.
+async function mainEffortTool(rt: Runtime, $: EngineInterface, signal: AbortSignal): Promise<string | undefined> {
+  const waiting = new AbortController();
+  const stop = () => waiting.abort();
+  signal.addEventListener('abort', stop);
+  if (signal.aborted) stop();
+  try {
+    const deadline = $.clock.sleep(TOOL_LIST_WAIT_MS, { signal: waiting.signal }).then(
+      () => 'over' as const,
+      (error: unknown) => {
+        if (!waiting.signal.aborted) notice(rt, $, 'warning', 'tool-list-wait-failed', `effort-live-control: the wait for the session's tool list failed: ${message(error)}; the main chat's refusal names /effort`, 'mainEffortTool');
+        return 'failed' as const;
+      },
+    );
+    const listed = await Promise.race([$.tool.list(), deadline]);
+    if (listed === 'failed') return undefined;
+    if (listed === 'over') {
+      notice(rt, $, 'warning', 'tool-list-timeout', `effort-live-control: the session's tool list did not answer within ${TOOL_LIST_WAIT_MS} ms; the main chat's refusal names /effort`, 'mainEffortTool');
+      return undefined;
+    }
+    return mainEffortToolOf(listed.map((tool) => tool.name));
+  } catch (error) {
+    notice(rt, $, 'warning', 'tool-list-failed', `effort-live-control: listing the session's tools failed: ${message(error)}; the main chat's refusal names /effort`, 'mainEffortTool');
+    return undefined;
+  } finally {
+    signal.removeEventListener('abort', stop);
+    waiting.abort();
+  }
+}
+
+async function answerButton(rt: Runtime, $: EngineInterface, agentId: string | undefined, button: Button, signal: AbortSignal): Promise<{ result: string }> {
   const controller = controllerOf(rt, agentId);
   if (!controller) {
-    record(rt, $, agentId ?? MAIN, 'unsteered', { event: 'button-refused', direction });
-    return { result: REFUSED };
+    record(rt, $, agentId ?? MAIN, 'unsteered', { event: 'button-refused', direction: button });
+    return { result: agentId === undefined ? MAIN_REFUSED(await mainEffortTool(rt, $, signal)) : REFUSED };
   }
-  const out = controller.onButton(direction);
+  const out = button === 'auto' ? controller.onAuto() : controller.onButton(button);
   perform(rt, $, controller, out.actions);
   return { result: out.text };
 }
@@ -540,14 +576,15 @@ function answerButton(rt: Runtime, $: EngineInterface, agentId: string | undefin
 async function registerButtons(rt: Runtime, $: EngineInterface): Promise<void> {
   await settleOptions(rt, $);
   if (!rt.config.buttons) return;
-  const specs: Array<{ name: string; description: string; direction: Direction }> = [
-    { name: 'effort_up', description: BUTTON_UP, direction: 'up' },
-    { name: 'effort_down', description: BUTTON_DOWN, direction: 'down' },
+  const specs: Array<{ name: string; description: string; button: Button }> = [
+    { name: 'effort_up', description: BUTTON_UP, button: 'up' },
+    { name: 'effort_down', description: BUTTON_DOWN, button: 'down' },
+    { name: 'effort_auto', description: BUTTON_AUTO, button: 'auto' },
   ];
   for (const spec of specs) {
     try {
       const { tool } = await $.tool.register({ name: spec.name, description: spec.description, inputSchema: { type: 'object', properties: {} } });
-      rt.buttons.set(tool, spec.direction);
+      rt.buttons.set(tool, spec.button);
       record(rt, $, 'main', 'plugin', { event: 'tool-registered', tool });
     } catch (error) {
       notice(rt, $, 'error', 'tool-register-failed', `effort-live-control: registering the ${spec.name} tool failed: ${message(error)}; agents have no ${spec.name} button`, 'registerButtons');
@@ -667,7 +704,10 @@ async function steerMain(rt: Runtime, $: EngineInterface, e: { turnId: string; m
   if (rt.config.mainChat === 'off') return undefined;
   try {
     await start(rt, $);
-    if (!isLevel(e.effort)) return undefined;
+    if (!isLevel(e.effort)) {
+      rt.main?.onRequestWithoutLevel(e.model);
+      return undefined;
+    }
     if (rt.main === undefined || e.turnId !== rt.mainTurn) {
       rt.mainTurn = e.turnId;
       const home = rt.turnHomes.get(e.turnId) ?? e.effort;
@@ -825,13 +865,13 @@ export const register: Register = (on: On, options: PluginOptions) => {
     return result;
   });
 
-  // Answers the two buttons itself; for a steered agent, reads what its own calls say about trouble
+  // Answers the three buttons itself; for a steered agent, reads what its own calls say about trouble
   // and carries a level change it is owed in the result's context.
   on('tool.call', async ($, e, next) => {
-    const direction = rt.buttons.get(e.tool);
-    if (direction !== undefined) {
+    const button = rt.buttons.get(e.tool);
+    if (button !== undefined) {
       try {
-        return answerButton(rt, $, e.agentId, direction);
+        return await answerButton(rt, $, e.agentId, button, next.signal);
       } catch (error) {
         notice(rt, $, 'error', 'answer-tool-failed', `effort-live-control: answering ${e.tool} failed: ${message(error)}; nothing changed`, 'answerButton');
         return { result: `Nothing changed: ${message(error)}` };

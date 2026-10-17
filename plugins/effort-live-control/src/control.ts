@@ -5,7 +5,7 @@ import type { Effort } from './effort.ts';
 import { collapse, packet as buildPacket, parseAnswer, type Tripwire } from './judge.ts';
 import { clamp, rank, step } from './ladder.ts';
 import { returnLine, type ReturnWords } from './signals.ts';
-import { announceLine, boundText, buttonText, whyChild, whyDecayed, whyJudge, whyRedispatch, whyResolved, WHY_FAIL1, WHY_FAIL2, WHY_JUDGE_FAILED, WHY_LANDING, type Direction } from './text.ts';
+import { announceLine, autoText, boundText, buttonText, levellessNote, unsteeredNote, whyChild, whyDecayed, whyJudge, whyRedispatch, whyResolved, WHY_FAIL1, WHY_FAIL2, WHY_JUDGE_FAILED, WHY_LANDING, type Direction } from './text.ts';
 
 export type Row = Record<string, unknown>;
 
@@ -60,6 +60,8 @@ const log = (event: string, fields: Row = {}, detail?: Row): Action => ({ kind: 
 export class Controller {
   level: Effort;
   base: Effort;
+  /** Set by a button press: no automatic rule moves the level until `onAuto`. */
+  held = false;
   ownFails = 0;
   readonly reds = new Set<string>();
 
@@ -79,6 +81,8 @@ export class Controller {
   private home: Effort;
   private model = '';
   private gated = false;
+  /** The last request carried no effort level: a press waits for one that does. */
+  private levelless = false;
   private line: string | undefined;
 
   constructor(private readonly setup: Setup) {
@@ -106,6 +110,10 @@ export class Controller {
   setHome(home: Effort): void {
     const to = clamp(home, this.setup.floor, this.setup.ceiling);
     this.home = to;
+    if (this.held) {
+      if (this.struggle) this.struggle.pre = to;
+      return;
+    }
     if (this.struggle) {
       this.struggle.pre = to;
       if (rank(this.level) < rank(to)) this.level = to;
@@ -118,6 +126,7 @@ export class Controller {
   /** The effort to send for one request, or undefined to pass it through untouched. */
   onRequest(model: string, requested: unknown): RequestOutcome {
     this.model = model;
+    this.levelless = false;
     const actions: Action[] = [];
     if (!this.setup.models.some((prefix) => model.startsWith(prefix))) {
       if (!this.gated) actions.push(log('model-gated', { model }));
@@ -133,6 +142,12 @@ export class Controller {
     actions.push(log('step', { model, requested: requested ?? null, sent, struggle: this.struggle !== undefined }));
     if (this.struggle && this.setup.struggleDecay > 0 && this.struggle.quiet >= this.setup.struggleDecay) this.close(actions, 'decay');
     return { send: sent, actions };
+  }
+
+  /** A request that carried no effort level, passed through untouched: a press says its level waits. */
+  onRequestWithoutLevel(model: string): void {
+    this.model = model;
+    this.levelless = true;
   }
 
   /** The agent's reply text of one request; a non-empty one becomes its last words. */
@@ -168,7 +183,7 @@ export class Controller {
       this.base = base;
       if (this.struggle) this.struggle.pre = base;
       else this.setLevel(base, WHY_LANDING);
-      actions.push(log('landing', { from, to: this.level }));
+      actions.push(log('landing', { from, to: this.level, ...this.heldMark() }));
     }
     const redType = [...this.children.values()].find((child) => child.type === spawn.type && this.isRed(child));
     if (redType) this.tripwire('redispatch', whyRedispatch(redType.type), actions, this.headOf(redType));
@@ -220,7 +235,7 @@ export class Controller {
     }
     const from = this.level;
     if (parsed.p >= this.setup.judgeRaiseAt) this.setLevel(step(this.level, +1, this.setup.floor, this.setup.ceiling), whyJudge(parsed.reason));
-    actions.push(log('judge', { tripwire, p: parsed.p, from, to: this.level, reason: parsed.reason, ms, usage }, detail));
+    actions.push(log('judge', { tripwire, p: parsed.p, from, to: this.level, reason: parsed.reason, ms, usage, ...this.heldMark() }, detail));
     return { actions };
   }
 
@@ -233,14 +248,43 @@ export class Controller {
     return { actions };
   }
 
+  /** A press of effort_up or effort_down: one step within the range, and the level holds, a press at a bound included. */
   onButton(direction: Direction): Outcome & { text: string } {
     const { floor, ceiling } = this.setup;
     const to = step(this.level, direction === 'up' ? 1 : -1, floor, ceiling);
-    if (to === this.level) return { text: boundText(direction, this.level), actions: [] };
     const from = this.level;
+    this.held = true;
+    // The press answers for itself: a line an automatic rule left undelivered would name a level the agent no longer has.
+    this.line = undefined;
+    const actions = [log('button', { direction, from, to })];
+    if (to === from) return { text: boundText(direction, from) + this.unsteered(), actions };
     this.level = to;
     if (!this.struggle) this.base = to;
-    return { text: buttonText(direction, to, floor, ceiling), actions: [log('button', { direction, from, to })] };
+    return { text: buttonText(direction, to, floor, ceiling) + this.unsteered(), actions };
+  }
+
+  /** effort_auto: the hold ends, the level and the resting level go home, and an open struggle resolves to home. */
+  onAuto(): Outcome & { text: string } {
+    const { floor, ceiling } = this.setup;
+    const to = clamp(this.home, floor, ceiling);
+    const from = this.level;
+    const held = this.held;
+    this.held = false;
+    this.line = undefined;
+    this.level = to;
+    this.base = to;
+    if (this.struggle) this.struggle.pre = to;
+    return { text: autoText(to, from, floor, ceiling) + this.unsteered(), actions: [log('auto', { from, to, held })] };
+  }
+
+  /**
+   * A press's note while the last request went to a model outside `models`, or carried no effort level: the level
+   * waits for a request it can go on.
+   */
+  private unsteered(): string {
+    if (this.model === '') return '';
+    if (!this.setup.models.some((prefix) => this.model.startsWith(prefix))) return unsteeredNote(this.model);
+    return this.levelless ? levellessNote(this.model) : '';
   }
 
   /** The line owed to the agent's next tool result, handed over once. */
@@ -302,8 +346,14 @@ export class Controller {
     this.judgeTokens.output += usage.output_tokens;
   }
 
+  /** The mark a row of an automatic rule carries while a press holds the level. */
+  private heldMark(): Row {
+    return this.held ? { held: true } : {};
+  }
+
+  // Every automatic rule moves the level here, so a held level stays put.
   private setLevel(to: Effort, why: string): void {
-    if (to === this.level) return;
+    if (this.held || to === this.level) return;
     this.level = to;
     if (this.setup.announce) this.line = announceLine(to, why);
   }
@@ -315,6 +365,10 @@ export class Controller {
       this.struggles += 1;
     }
     this.struggle.quiet = 0;
+    if (this.held) {
+      actions.push(log('tripwire', { tripwire: kind, level: this.level, held: true }));
+      return;
+    }
     if (!this.setup.judge) {
       const from = this.level;
       this.setLevel(step(this.level, +1, this.setup.floor, this.setup.ceiling), why);
@@ -355,7 +409,7 @@ export class Controller {
   private failed(epoch: number, tripwire: Tripwire, reason: string, actions: Action[], detail: Row): void {
     const from = this.level;
     if (this.current(epoch)) this.setLevel(step(this.level, +1, this.setup.floor, this.setup.ceiling), WHY_JUDGE_FAILED);
-    actions.push(log('judge-failed', { tripwire, reason, from, to: this.level }, detail));
+    actions.push(log('judge-failed', { tripwire, reason, from, to: this.level, ...this.heldMark() }, detail));
   }
 
   private resolve(actions: Action[]): void {
@@ -377,6 +431,6 @@ export class Controller {
     }
     this.base = pre;
     this.setLevel(pre, why === 'decay' ? whyDecayed(pre, this.setup.struggleDecay) : whyResolved(pre));
-    actions.push(log('resolved', { from, to: this.level, requests, why }));
+    actions.push(log('resolved', { from, to: this.level, requests, why, ...this.heldMark() }));
   }
 }
