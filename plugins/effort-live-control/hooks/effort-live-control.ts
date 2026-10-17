@@ -5,7 +5,7 @@ import { describe, denyText, EMPTY_TEXT, isStillRunning, parseTag, stepEffort, s
 import { JUDGE_SYSTEM, parseTripwires, TRIPWIRES } from '../src/judge.ts';
 import { clamp, isLevel } from '../src/ladder.ts';
 import { appendRows, sessionLogPath } from '../src/log.ts';
-import { levelRow, pluginLogDir, PluginLogQueue, type Level } from '../src/plugin-log.ts';
+import { diagnosticVisible, levelRow, pluginLogDir, PluginLogQueue, type Level } from '../src/plugin-log.ts';
 import { buildReader, CasebookCache, decide, NO_PREVIOUS, parseReaderAnswer, resolveCasebook, type CasebookIo } from '../src/reader.ts';
 import { compile, envName, resolveSettings, SETTING_KEYS, type Compiled, type OptionEnv, type Settings } from '../src/settings.ts';
 import { isRead, isTestRun, testOutcome } from '../src/signals.ts';
@@ -44,7 +44,7 @@ async function readPin(rt: Runtime, $: EngineInterface, agentId: string): Promis
     const { value } = await $.state.get({ plugin: 'effort-live-control', key: 'pin', id: agentId });
     return value ?? undefined;
   } catch (error) {
-    notice(rt, $, 'warning', 'pin-unreadable', `effort-live-control: reading sub-agent ${agentId}'s pin failed: ${message(error)}; its request goes at the effort it carries`, 'readPin');
+    notice(rt, $, 'error', 'pin-unreadable', `effort-live-control: reading sub-agent ${agentId}'s pin failed: ${message(error)}; its request goes at the effort it carries`, 'readPin');
     throw error;
   }
 }
@@ -90,7 +90,7 @@ async function awaitPin(rt: Runtime, $: EngineInterface, spawns: Spawns, agentId
   const deadline = $.clock.sleep(SPAWN_WAIT_MS, { signal: waiting.signal }).then(
     () => 'over' as const,
     (error: unknown) => {
-      if (!waiting.signal.aborted) notice(rt, $, 'warning', 'spawn-wait-failed', `effort-live-control: sub-agent ${agentId}'s wait for its spawn failed: ${message(error)}; it goes on without waiting`, 'awaitPin');
+      if (!waiting.signal.aborted) notice(rt, $, 'error', 'spawn-wait-failed', `effort-live-control: sub-agent ${agentId}'s wait for its spawn failed: ${message(error)}; it goes on without waiting`, 'awaitPin');
       return 'over' as const;
     },
   );
@@ -170,7 +170,7 @@ function setupPlugin(rt: Runtime, $: EngineInterface): Promise<string | undefine
     try { configured = await $.env.get('PLUGIN_LOG_DIR'); } catch (error) { dirError = { cause: error }; }
     rt.pluginDir = pluginLogDir(configured, home, 'effort-live-control');
     rt.pluginQueue = new PluginLogQueue(rt.pluginDir, 'effort-live-control');
-    if (homeError !== undefined) notice(rt, $, 'warning', 'home-missing', `effort-live-control: reading HOME failed: ${message(homeError.cause)}; skipping ~/.claude/agents and ~ in logFile`, 'start');
+    if (homeError !== undefined) notice(rt, $, 'error', 'home-missing', `effort-live-control: reading HOME failed: ${message(homeError.cause)}; skipping ~/.claude/agents and ~ in logFile`, 'start');
     if (dirError !== undefined) notice(rt, $, 'warning', 'plugin-log-dir-unreadable', `effort-live-control: reading PLUGIN_LOG_DIR failed: ${message(dirError.cause)}; using the HOME fallback when available`, 'start');
     return home;
   })();
@@ -182,6 +182,7 @@ async function flushPlugin(rt: Runtime, $: EngineInterface): Promise<void> {
     try { return await $.process.run(argv, init); }
     catch (error) { throw new Error(`$.process.run failed: ${message(error)}`); }
   });
+  for (const line of out.fallback ?? []) logFallback($, line);
   if (out.error !== undefined) {
     logFallback($, `effort-live-control: ${out.error}`);
     record(rt, $, 'main', 'plugin', { event: 'plugin-log-failed', error: out.error });
@@ -200,13 +201,16 @@ function plog(rt: Runtime, $: EngineInterface, level: Level, event: string, msg:
     const session = await rt.pluginSession;
     const now = await $.clock.now();
     rt.pluginQueue!.add(levelRow({ plugin: 'effort-live-control', level, event, msg, where, session, detail }, now));
-  }).catch((error) => logFallback($, `effort-live-control: plugin log ${rt.pluginDir ?? 'off'}: preparing ${event} failed: ${message(error)}`));
+  }).catch((error) => {
+    if (!diagnosticVisible(level, true)) logFallback($, msg);
+    logFallback($, `effort-live-control: plugin log ${rt.pluginDir ?? 'off'}: preparing ${event} failed: ${message(error)}`);
+  });
   rt.pluginFlushing = rt.pluginWriting.then(() => flushPlugin(rt, $)).catch((error) => logFallback($, `effort-live-control: plugin log ${rt.pluginDir ?? 'off'}: flushing failed: ${message(error)}`));
+  if (diagnosticVisible(level, true)) $.ui.log(msg);
 }
 
 function notice(rt: Runtime, $: EngineInterface, level: Level, event: string, text: string, component: string): void {
   plog(rt, $, level, event, text, `hooks/effort-live-control.ts#${component}`);
-  $.ui.log(text);
 }
 
 // Rows queue in memory; each flush reads the session's file and appends them,
@@ -219,7 +223,7 @@ function record(rt: Runtime, $: EngineInterface, agent: string, type: string, ro
   rt.logPath ??= $.session.id().then(
     (id) => sessionLogPath(file, id),
     (error) => {
-      notice(rt, $, 'warning', 'session-id-unreadable', `effort-live-control: reading the session id failed: ${message(error)}; the decision log is off for this session`, 'record');
+      notice(rt, $, 'error', 'session-id-unreadable', `effort-live-control: reading the session id failed: ${message(error)}; the decision log is off for this session`, 'record');
       return undefined;
     },
   );
@@ -306,15 +310,15 @@ function start(rt: Runtime, $: EngineInterface): Promise<void> {
     try {
       cwd = await $.session.cwd();
     } catch (error) {
-      notice(rt, $, 'warning', 'cwd-unreadable', `effort-live-control: reading the session cwd failed: ${message(error)}; using relative paths`, 'start');
+      notice(rt, $, 'error', 'cwd-unreadable', `effort-live-control: reading the session cwd failed: ${message(error)}; using relative paths`, 'start');
     }
     try {
       configDir = await $.env.get('CLAUDE_CONFIG_DIR');
     } catch (error) {
-      notice(rt, $, 'warning', 'config-dir-missing', `effort-live-control: reading CLAUDE_CONFIG_DIR failed: ${message(error)}; skipping its agents directory`, 'start');
+      notice(rt, $, 'error', 'config-dir-missing', `effort-live-control: reading CLAUDE_CONFIG_DIR failed: ${message(error)}; skipping its agents directory`, 'start');
     }
     const file = rt.config.logFile;
-    if (file.startsWith('~') && !home) notice(rt, $, 'warning', 'log-file-needs-home', `effort-live-control: logFile ${file} needs HOME, which is unset; the decision log is off`, 'start');
+    if (file.startsWith('~') && !home) notice(rt, $, 'error', 'log-file-needs-home', `effort-live-control: logFile ${file} needs HOME, which is unset; the decision log is off`, 'start');
     else rt.logFile = file.startsWith('~') ? `${home}${file.slice(1)}` : file;
     const book = rt.config.casebookFile;
     if (book.startsWith('~') && !home) {
@@ -322,7 +326,7 @@ function start(rt: Runtime, $: EngineInterface): Promise<void> {
       notice(rt, $, 'warning', 'casebook-needs-home', `effort-live-control: ${rt.casebookNote}; the prompt reader uses the bundled casebook`, 'start');
     } else rt.casebookPath = book.startsWith('~') ? `${home}${book.slice(1)}` : book;
     for (const line of rt.optionErrors) {
-      notice(rt, $, 'warning', 'option-error', line, 'start');
+      notice(rt, $, 'error', 'option-error', line, 'start');
       record(rt, $, 'main', 'option-error', { event: 'option-error', line });
     }
     const dirs = [`${cwd}/.claude/agents`, ...(configDir ? [`${configDir}/agents`] : []), ...(home ? [`${home}/.claude/agents`] : []), ...rt.config.agentDirs];
@@ -334,7 +338,7 @@ function start(rt: Runtime, $: EngineInterface): Promise<void> {
         read: (path) => $.fs.read(path),
         listMarkdown: async (dir) => (await $.fs.list(dir)).filter((entry) => entry.kind === 'file' && entry.name.endsWith('.md')).map((entry) => entry.name),
       },
-      (line) => notice(rt, $, 'warning', 'definition-unreadable', line, 'definitionOf'),
+      (line) => notice(rt, $, 'error', 'definition-unreadable', line, 'definitionOf'),
     );
   })().catch((error) => notice(rt, $, 'error', 'start-failed', `effort-live-control: starting failed: ${message(error)}; sub-agents run unsteered at the effort they carry`, 'start'));
   return rt.started;
@@ -347,7 +351,7 @@ async function definitionOf(rt: Runtime, $: EngineInterface, type: string | unde
   try {
     return await rt.defs.resolve(type);
   } catch (error) {
-    notice(rt, $, 'warning', 'definition-unreadable', `effort-live-control: reading the definition of ${type} failed: ${message(error)}; treating it as having none`, 'definitionOf');
+    notice(rt, $, 'error', 'definition-unreadable', `effort-live-control: reading the definition of ${type} failed: ${message(error)}; treating it as having none`, 'definitionOf');
     return NO_DEFINITION(rt);
   }
 }
@@ -407,7 +411,7 @@ function perform(rt: Runtime, $: EngineInterface, controller: Controller, action
   for (const action of actions) {
     if (action.kind === 'log') {
       const { event, ...rest } = action.row;
-      if (event === 'judge-failed' && rest.reason !== 'model-unavailable') plog(rt, $, 'warning', 'judge-failed', `effort-live-control: judge failed for ${controller.id}: ${String(rest.reason)}; effort ${String(rest.from)} -> ${String(rest.to)}`, 'src/control.ts#failed', { agent: controller.id, error: String(rest.reason) });
+      if (event === 'judge-failed' && rest.reason !== 'model-unavailable') plog(rt, $, 'error', 'judge-failed', `effort-live-control: judge failed for ${controller.id}: ${String(rest.reason)}; effort ${String(rest.from)} -> ${String(rest.to)}`, 'src/control.ts#failed', { agent: controller.id, error: String(rest.reason) });
       if (rest.from !== undefined && rest.to !== undefined && rest.from !== rest.to) plog(rt, $, 'info', 'effort-steered', `effort-live-control: ${controller.id}'s effort changed from ${String(rest.from)} to ${String(rest.to)}`, 'hooks/effort-live-control.ts#perform', { agent: controller.id, from: rest.from, to: rest.to });
       record(rt, $, controller.id, controller.type, { event, ...rest, ...(rt.config.logPackets ? action.detail : {}) });
     } else {
@@ -437,7 +441,7 @@ async function completeModel(rt: Runtime, $: EngineInterface, request: ModelComp
   if (oauthDenied(reply)) {
     if (!rt.modelUnavailable) {
       rt.modelUnavailable = true;
-      notice(rt, $, 'warning', 'model-unavailable', 'effort-live-control: model judgment unavailable for this session (api-error 403 oauth_org_not_allowed); prompts use requested effort and judges use deterministic failure handling', 'completeModel');
+      notice(rt, $, 'error', 'model-unavailable', 'effort-live-control: model judgment unavailable for this session (api-error 403 oauth_org_not_allowed); prompts use requested effort and judges use deterministic failure handling', 'completeModel');
     }
     return undefined;
   }
@@ -489,7 +493,7 @@ function afterSpawn(rt: Runtime, $: EngineInterface, agentId: string, type: stri
       else rt.awaiting.set(agentId, { type, control: definition.control, brief });
     }
   } catch (error) {
-    notice(rt, $, 'warning', 'steer-subagent-failed', `effort-live-control: steering sub-agent ${agentId} failed: ${message(error)}; it runs unsteered at its pin`, 'afterSpawn');
+    notice(rt, $, 'error', 'steer-subagent-failed', `effort-live-control: steering sub-agent ${agentId} failed: ${message(error)}; it runs unsteered at its pin`, 'afterSpawn');
   }
 }
 
@@ -500,7 +504,7 @@ function adoptFirst(rt: Runtime, $: EngineInterface, agentId: string, requested:
   rt.awaiting.delete(agentId);
   if (!isLevel(requested)) {
     record(rt, $, agentId, waiting.type, { event: 'not-steered', requested: requested ?? null });
-    notice(rt, $, 'warning', 'not-a-level', `effort-live-control: sub-agent ${agentId} (${waiting.type}) starts at ${String(requested)}, not a level; it is not steered`, 'adoptFirst');
+    notice(rt, $, 'error', 'not-a-level', `effort-live-control: sub-agent ${agentId} (${waiting.type}) starts at ${String(requested)}, not a level; it is not steered`, 'adoptFirst');
     return undefined;
   }
   return newController(rt, agentId, waiting.type, waiting.control, requested, waiting.brief);
@@ -546,7 +550,7 @@ async function registerButtons(rt: Runtime, $: EngineInterface): Promise<void> {
       rt.buttons.set(tool, spec.direction);
       record(rt, $, 'main', 'plugin', { event: 'tool-registered', tool });
     } catch (error) {
-      notice(rt, $, 'warning', 'tool-register-failed', `effort-live-control: registering the ${spec.name} tool failed: ${message(error)}; agents have no ${spec.name} button`, 'registerButtons');
+      notice(rt, $, 'error', 'tool-register-failed', `effort-live-control: registering the ${spec.name} tool failed: ${message(error)}; agents have no ${spec.name} button`, 'registerButtons');
       record(rt, $, 'main', 'plugin', { event: 'tool-register-failed', tool: spec.name, error: message(error) });
     }
   }
@@ -566,7 +570,7 @@ function finish(rt: Runtime, $: EngineInterface, agentId: string, answer: string
     }
     rt.awaiting.delete(agentId);
   } catch (error) {
-    notice(rt, $, 'warning', 'close-steering-failed', `effort-live-control: closing sub-agent ${agentId}'s steering failed: ${message(error)}; its pin is cleared as usual`, 'finish');
+    notice(rt, $, 'error', 'close-steering-failed', `effort-live-control: closing sub-agent ${agentId}'s steering failed: ${message(error)}; its pin is cleared as usual`, 'finish');
   }
 }
 
@@ -626,7 +630,7 @@ async function readPrompt(rt: Runtime, $: EngineInterface, text: string): Promis
   const built = buildReader(text, await previousReply(rt, $), casebook.rows);
   const shown = { casebook: built.core.length, casebookSource: casebook.source, precedents: built.precedents.length, ...(casebook.error === undefined ? {} : { casebookError: casebook.error }) };
   const row = (fields: Fields, answer?: string) => {
-    if (fields.event === 'reader-failed') plog(rt, $, 'warning', 'reader-failed', `effort-live-control: prompt reader failed: ${String(fields.error)}; this turn uses its requested effort`, 'hooks/effort-live-control.ts#readPrompt', { error: String(fields.error) });
+    if (fields.event === 'reader-failed') plog(rt, $, 'error', 'reader-failed', `effort-live-control: prompt reader failed: ${String(fields.error)}; this turn uses its requested effort`, 'hooks/effort-live-control.ts#readPrompt', { error: String(fields.error) });
     record(rt, $, MAIN, MAIN, { ...fields, ...shown, ...(rt.config.logPackets ? { packet: built.prompt, answer: answer ?? null } : {}) });
   };
   const started = Date.now();
@@ -675,7 +679,7 @@ async function steerMain(rt: Runtime, $: EngineInterface, e: { turnId: string; m
     perform(rt, $, rt.main, out.actions);
     return out.send;
   } catch (error) {
-    notice(rt, $, 'warning', 'steer-main-failed', `effort-live-control: steering the main chat failed: ${message(error)}; this request goes at ${String(e.effort)}`, 'steerMain');
+    notice(rt, $, 'error', 'steer-main-failed', `effort-live-control: steering the main chat failed: ${message(error)}; this request goes at ${String(e.effort)}`, 'steerMain');
     return undefined;
   }
 }
@@ -747,7 +751,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
         try {
           await writePin($, result.agentId, { level: startOfSpawn(definition, tagged).level ?? null });
         } catch (error) {
-          notice(rt, $, 'warning', 'pin-write-failed', `effort-live-control: recording sub-agent ${result.agentId}'s pin failed: ${message(error)}; it runs at the session's effort, unpinned`, 'agent.spawn');
+          notice(rt, $, 'error', 'pin-write-failed', `effort-live-control: recording sub-agent ${result.agentId}'s pin failed: ${message(error)}; it runs at the session's effort, unpinned`, 'agent.spawn');
         }
       }
       return result;
@@ -767,7 +771,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       try {
         home = await readPrompt(rt, $, e.text);
       } catch (error) {
-        notice(rt, $, 'warning', 'prompt-unreadable', `effort-live-control: reading the prompt failed: ${message(error)}; this turn goes at the level its first request asks for`, 'prompt.submit');
+        notice(rt, $, 'error', 'prompt-unreadable', `effort-live-control: reading the prompt failed: ${message(error)}; this turn goes at the level its first request asks for`, 'prompt.submit');
       }
       rt.waiting.push({ text: e.text, home });
       if (rt.waiting.length > WAITING_MAX) rt.waiting.shift();
@@ -790,7 +794,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       try {
         rt.main?.onAnswer(result.answer);
       } catch (error) {
-        notice(rt, $, 'warning', 'main-reply-unreadable', `effort-live-control: reading the main chat's reply failed: ${message(error)}; its last words are not kept`, 'turn.step');
+        notice(rt, $, 'error', 'main-reply-unreadable', `effort-live-control: reading the main chat's reply failed: ${message(error)}; its last words are not kept`, 'turn.step');
       }
       return result;
     }
@@ -810,13 +814,13 @@ export const register: Register = (on: On, options: PluginOptions) => {
         if (step.pin !== undefined) await writePin($, agentId, { level: step.pin });
       }
     } catch (error) {
-      notice(rt, $, 'warning', 'resolve-effort-failed', `effort-live-control: resolving sub-agent ${agentId}'s effort failed: ${message(error)}; this request goes at ${String(e.effort)}`, 'turn.step');
+      notice(rt, $, 'error', 'resolve-effort-failed', `effort-live-control: resolving sub-agent ${agentId}'s effort failed: ${message(error)}; this request goes at ${String(e.effort)}`, 'turn.step');
     }
     const result = yield* next(send === undefined || send === e.effort ? e : { ...e, effort: send });
     try {
       controller?.onAnswer(result.answer);
     } catch (error) {
-      notice(rt, $, 'warning', 'subagent-reply-unreadable', `effort-live-control: reading sub-agent ${agentId}'s reply failed: ${message(error)}; its last words are not kept`, 'turn.step');
+      notice(rt, $, 'error', 'subagent-reply-unreadable', `effort-live-control: reading sub-agent ${agentId}'s reply failed: ${message(error)}; its last words are not kept`, 'turn.step');
     }
     return result;
   });
@@ -842,7 +846,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       const line = controller.takeAnnouncement();
       if (line !== undefined) return { ...result, context: [...(result.context ?? []), line] };
     } catch (error) {
-      notice(rt, $, 'warning', 'tool-result-unreadable', `effort-live-control: reading ${e.agentId ?? 'main'}'s ${e.tool} result failed: ${message(error)}; its effort stays where it is`, 'tool.call');
+      notice(rt, $, 'error', 'tool-result-unreadable', `effort-live-control: reading ${e.agentId ?? 'main'}'s ${e.tool} result failed: ${message(error)}; its effort stays where it is`, 'tool.call');
     }
     return result;
   });
@@ -862,7 +866,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       finish(rt, $, e.agentId, e.answer);
       if ((await readPin(rt, $, e.agentId)) !== undefined) await writePin($, e.agentId, { level: null });
     } catch (error) {
-      notice(rt, $, 'warning', 'pin-clear-failed', `effort-live-control: clearing sub-agent ${e.agentId}'s pin failed: ${message(error)}; its next run keeps the old pin`, 'turn.complete');
+      notice(rt, $, 'error', 'pin-clear-failed', `effort-live-control: clearing sub-agent ${e.agentId}'s pin failed: ${message(error)}; its next run keeps the old pin`, 'turn.complete');
     }
     return result;
   });

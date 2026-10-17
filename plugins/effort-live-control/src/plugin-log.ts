@@ -4,7 +4,12 @@ export const ROW_MAX_BYTES = 4096;
 export type Level = 'error' | 'warning' | 'info';
 type RowFields = { plugin: string; level: Level; event: string; msg: string; where: string; session?: string; detail?: Record<string, unknown> };
 type Run = (argv: readonly string[], init: { timeoutMs: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
-export type FlushResult = { dropped: number; error?: string };
+export type FlushResult = { dropped: number; error?: string; fallback?: string[] };
+
+/** Errors are immediate; routine diagnostics surface only when their log cannot hold them. */
+export function diagnosticVisible(level: Level, logged: boolean): boolean {
+  return level === 'error' || !logged;
+}
 
 export function pluginLogDir(configured: string | undefined, home: string | undefined, plugin: string): string | undefined {
   const base = configured || (home ? `${home.replace(/\/$/, '')}/.local/state/${plugin}/logs` : undefined);
@@ -134,7 +139,13 @@ export class PluginLogQueue {
         const notice = this.dir ? `plugin log ${this.dir}: ${cause}; dropped ${dropped} rows` : cause;
         const first = !this.failing;
         this.failing = true;
-        return { dropped, ...(first ? { error: notice } : {}) };
+        // Errors already reached the screen when queued. Every unwritten routine
+        // diagnostic needs its own fallback, even after the streak notice fired.
+        const fallback = rows.slice(written).flatMap((line) => {
+          const row = JSON.parse(line) as RowFields;
+          return diagnosticVisible(row.level, true) ? [] : [row.msg];
+        });
+        return { dropped, ...(first ? { error: notice } : {}), ...(fallback.length ? { fallback } : {}) };
       }
     });
     this.chain = result.then(() => undefined);

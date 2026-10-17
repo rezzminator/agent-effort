@@ -210,6 +210,21 @@ it('PluginLogQueue serializes flushes, reports dropped rows once and rearms afte
   expect((await off.flush(runner)).error).toContain('plugin log off: no PLUGIN_LOG_DIR and no HOME');
 });
 
+it('PluginLogQueue returns every unwritten warning and info message, including repeated failures and later batches', async () => {
+  const { levelRow, PluginLogQueue } = writer();
+  const queue = new PluginLogQueue('/logs', plugin);
+  for (let i = 0; i < 65; i++) queue.add(levelRow({ ...fields, level: 'info', msg: `change ${i}` }, now));
+  queue.add(levelRow({ ...fields, level: 'warning', msg: 'recoverable warning' }, now));
+  queue.add(levelRow(fields, now));
+  let calls = 0;
+  const result = await queue.flush(async () => ({ exitCode: ++calls === 1 ? 0 : 1, stdout: '', stderr: 'write failed' }));
+  expect(result.fallback).toEqual(['change 64', 'recoverable warning']);
+  queue.add(levelRow({ ...fields, level: 'warning', msg: 'another warning' }, now));
+  const repeated = await queue.flush(async () => { throw new Error('still broken'); });
+  expect(repeated.error).toBeUndefined();
+  expect(repeated.fallback).toEqual(['another warning']);
+});
+
 it.each([
   { session: 'sess1' },
   { session: 'quote"\\backslash\nline\t🙂 ,"detail":{"session":"fake"}' },

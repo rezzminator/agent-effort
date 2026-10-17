@@ -41,4 +41,10 @@ Set under the plugin's settings, or in the environment variable named in the tab
 | `logFile` | `EFFORT_LIVE_CONTROL_LOG_FILE` | `~/.local/state/effort-live-control/decisions.jsonl` | The decision log, one file per session (session id before the extension); a leading `~` is your home directory; an empty option turns it off (a blank variable counts as unset). |
 | `logPackets` | `EFFORT_LIVE_CONTROL_LOG_PACKETS` | `false` | Put the judge's and the prompt reader's snapshot and answer in their log rows. |
 
+## Logs
+
+Error-level diagnostics appear on screen and in `errors.jsonl`. Warnings and routine effort-change diagnostics go only to `warnings.jsonl` and `info.jsonl` under `$PLUGIN_LOG_DIR/effort-live-control/`, or `$HOME/.local/state/effort-live-control/logs/` when `PLUGIN_LOG_DIR` is unset. If no log directory resolves or writes fail, every unwritten warning and info message falls back to the screen. The logger's own failure notice stays visible, once per failing streak, re-armed by a successful write.
+
+Recoverable casebook and model fallbacks remain warnings. Invalid settings and failures that disable pinning, steering, judgment, definition lookup, decision logging or tool registration are errors. Effort-change announcements in tool-result context, button replies and spawn refusals are product output, not diagnostics, and are unchanged.
+
 Built and maintained with [Professor](https://github.com/rezzminator/professor).

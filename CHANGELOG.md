@@ -4,6 +4,12 @@ Every release of effort-live-control (named agent-effort through 0.1.3). Version
 
 ## [Unreleased]
 
+## [0.3.6-alpha] — 2026-10-17
+
+### Fixed
+- Error diagnostics reach the screen and plugin log; warnings and routine effort-change diagnostics go only to the plugin log while it works. If no directory resolves or writes fail, every unwritten warning and info message falls back to the screen, including later failures in the same streak. The logger's own failure notice stays visible.
+- Invalid settings and failures that prevent pinning, steering, judgment, definition lookup, decision logging or tool registration are errors rather than warnings. Recoverable casebook and model fallbacks remain warnings. Model-facing effort announcements, button replies and spawn refusals are unchanged.
+
 ## [0.3.5] — 2026-10-16
 
 ### Added

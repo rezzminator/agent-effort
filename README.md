@@ -5,9 +5,9 @@
 **Set each Claude Code sub-agent's reasoning effort per spawn with a tag, and let an orchestrator's effort follow its own trouble while it works.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.3.5-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.6--alpha-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-668%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-673%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -179,6 +179,8 @@ Set under the plugin's settings, or in the environment variable named in the tab
 ## Logs
 
 Errors, warnings and effort changes are also appended to `errors.jsonl`, `warnings.jsonl` and `info.jsonl` under `$PLUGIN_LOG_DIR/effort-live-control/`. Without `PLUGIN_LOG_DIR`, they use `$HOME/.local/state/effort-live-control/logs/`. Rows contain timestamps, event names, stable code locations and optional session ids; no prompt, transcript or tool-input bodies are added to these files, even with `logPackets` enabled.
+
+Error-level diagnostics appear on screen and in the plugin log. Warning- and info-level diagnostics stay in the plugin log only. If no log directory resolves or a write fails, every unwritten warning and info message falls back to the screen; the logger's own failure notice remains visible, once per failing streak. Recoverable casebook and model fallbacks remain warnings; invalid settings and failures that disable pinning, steering, judgment, definition lookup, decision logging or tool registration are errors. Effort-change announcements in tool-result context, button replies and spawn refusals are product output, not diagnostics, and are unchanged.
 
 Rows are capped at 4096 bytes. A level file over 20 MiB moves to `.1` and emits a `log-capped` warning. Directories and files are created privately. A failed append gives one screen notice and one `plugin-log-failed` decision row per failing streak, re-armed after a successful write, without changing the plugin's result. Appending needs the CLI's `$.process.run` and `/bin/sh`; when unavailable, the screen notice names the failure.
 

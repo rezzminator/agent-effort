@@ -1517,7 +1517,7 @@ suite('main chat: the casebook', () => {
     expect(x.logs).toEqual([]);
   });
 
-  it('main chat: an unreadable casebook file uses the bundled casebook and reports the error', async () => {
+  it('main chat: an unreadable casebook file uses the bundled casebook and records why without screen noise', async () => {
     const { x, calls } = withReader({}, { files: { [CASEBOOK]: caseLine() }, broken: [CASEBOOK] });
     await x.prompt('go');
     expect(calls[0].prompt).toContain(SHOWN_FIRST);
@@ -1525,8 +1525,7 @@ suite('main chat: the casebook', () => {
     expect(row.casebookSource).toBe('bundled');
     expect(row.casebook).toBe(36);
     expect(row.casebookError).toContain('EACCES');
-    expect(x.logs.join('\n')).toContain(`reading the casebook ${CASEBOOK} failed: EACCES`);
-    expect(x.logs.join('\n')).toContain('the reader uses the bundled casebook');
+    expect(x.logs).toEqual([]);
   });
 
   it('main chat: a casebook path that needs an unset HOME uses the bundled casebook and reports why', async () => {
@@ -1547,14 +1546,6 @@ suite('main chat: the casebook', () => {
     const row = (await x.rows()).find((r) => r.event === 'prompt')!;
     expect(row.casebookSource).toBe('file');
     expect(row.casebook).toBe(1);
-  });
-
-  it('main chat: a malformed line is skipped, and one log line names the file and the line numbers', async () => {
-    const { x } = withReader({}, { files: { [CASEBOOK]: [caseLine(), 'not json', caseLine({ level: 'low' })].join('\n') } });
-    await x.prompt('go');
-    await x.prompt('again');
-    expect(x.logs.filter((line) => line.includes('casebook'))).toEqual([`effort-live-control: the casebook ${CASEBOOK} has malformed lines 2, 3; they are skipped`]);
-    expect((await x.rows()).find((r) => r.event === 'prompt')!.casebook).toBe(1);
   });
 
   it('main chat: the file is read once and again when its mtime changes', async () => {
@@ -1732,10 +1723,55 @@ suite('plugin log adapter', () => {
     return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   };
 
+  it('main chat: malformed lines are skipped and logged once with their file and line numbers, without screen noise', async () => {
+    const dir = await fresh();
+    const { x } = withReader({}, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, files: { [CASEBOOK]: [caseLine(), 'not json', caseLine({ level: 'low' })].join('\n') } });
+    await x.prompt('go'); await x.prompt('again'); await x.sessionEnd();
+    expect(x.logs).toEqual([]);
+    expect(await readRows(join(dir, 'effort-live-control'), 'warnings.jsonl')).toEqual([
+      expect.objectContaining({ event: 'casebook-malformed', msg: `effort-live-control: the casebook ${CASEBOOK} has malformed lines 2, 3; they are skipped` }),
+    ]);
+    expect((await x.rows()).find((r) => r.event === 'prompt')!.casebook).toBe(1);
+  });
+
+  it('screen policy: a recoverable warning stays off screen with an active log', async () => {
+    const dir = await fresh();
+    const { x } = withReader({ logFile: '' }, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, files: { [CASEBOOK]: 'unreadable' }, broken: [CASEBOOK] });
+    await x.prompt('go'); await x.sessionEnd();
+    expect(await readRows(join(dir, 'effort-live-control'), 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: 'casebook-unreadable' }));
+    expect(x.logs).toEqual([]);
+  });
+
+  it.each(['no destination', 'failed write'])('screen policy: a warning reaches the screen with %s', async (mode) => {
+    const { x, calls, script } = withReader({ logFile: '', casebookFile: '' }, {
+      env: mode === 'no destination' ? { HOME: undefined, PLUGIN_LOG_DIR: undefined } : { PLUGIN_LOG_DIR: await fresh() },
+      run: async () => ({ exitCode: 1, stdout: '', stderr: 'append denied' }),
+    });
+    script.next = () => calls.at(-1).model === 'haiku'
+      ? { isAnswered: false, reason: 'api-error', status: 403, error: 'oauth_org_not_allowed', usage: USAGE }
+      : say('0.05 0.90 0.05');
+    await x.prompt('go'); await x.sessionEnd();
+    expect(x.logs).toContainEqual(expect.stringContaining('default haiku refused'));
+    expect(x.logs.filter((line) => line.includes('plugin log'))).toHaveLength(1);
+    expect(await x.mainStep('medium')).toBe('high');
+  });
+
+  it('screen policy: a tool registration error always shows and is logged as an error', async () => {
+    const dir = await fresh();
+    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, options: { logFile: '' } });
+    x.$.tool.register = async () => { throw new Error('registration denied'); };
+    await x.sessionStart(); await x.sessionEnd();
+    expect(x.logs.filter((line) => line.includes('registration denied'))).toHaveLength(2);
+    expect(await readRows(join(dir, 'effort-live-control'), 'errors.jsonl')).toEqual([
+      expect.objectContaining({ event: 'tool-register-failed', level: 'error', msg: expect.stringContaining('effort_up') }),
+      expect.objectContaining({ event: 'tool-register-failed', level: 'error', msg: expect.stringContaining('effort_down') }),
+    ]);
+  });
+
   it.each(['PLUGIN_LOG_DIR', 'fallback'])('writes forced error and warning through %s without changing answers', async (source) => {
     const dir = await fresh();
-    const x = engine(undefined, { env: { HOME: dir, PLUGIN_LOG_DIR: source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels') : undefined }, run: realRun, options: { mainChat: 'tripwires', floor: 'invalid', logFile: '' } });
-    await x.sessionStart(); await x.sessionStart();
+    const x = engine(undefined, { env: { HOME: dir, PLUGIN_LOG_DIR: source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels') : undefined }, run: realRun, options: { mainChat: 'reader', casebookFile: '/casebook', logFile: '' }, files: { '/casebook': 'unreadable' }, broken: ['/casebook'], reply: () => say('0.90 0.05 0.05') });
+    await x.sessionStart(); await x.sessionStart(); await x.prompt('go');
     expect(await x.mainStep('medium')).toBe('medium');
     vi.spyOn(Controller.prototype, 'onButton').mockImplementation(() => { throw new Error('unknown level'); });
     const result = await x.tool(undefined, 'mcp__effort-live-control__effort_up', {});
@@ -1744,21 +1780,21 @@ suite('plugin log adapter', () => {
     await x.sessionEnd();
     const target = source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels/effort-live-control') : join(dir, '.local/state/effort-live-control/logs');
     expect(await readRows(target, 'errors.jsonl')).toEqual([expect.objectContaining({ ts: '2026-10-14T15:20:31.123Z', plugin: 'effort-live-control', level: 'error', event: 'answer-tool-failed', where: 'hooks/effort-live-control.ts#answerButton', session: 'sess1' })]);
-    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ level: 'warning', event: 'option-error', where: 'hooks/effort-live-control.ts#start' }));
+    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ level: 'warning', event: 'casebook-unreadable', where: 'hooks/effort-live-control.ts#readCasebook' }));
     expect(x.logs).toContain('effort-live-control: answering mcp__effort-live-control__effort_up failed: unknown level; nothing changed');
   });
 
   it.each([
     { level: 'error', file: 'errors.jsonl', event: 'answer-tool-failed', component: 'answerButton', cause: 'unknown level' },
-    { level: 'warning', file: 'warnings.jsonl', event: 'pin-unreadable', component: 'readPin', cause: 'pin store offline' },
+    { level: 'error', file: 'errors.jsonl', event: 'pin-unreadable', component: 'readPin', cause: 'pin store offline' },
   ])('queues $event before a throwing screen call', async ({ level, file, event, component, cause }) => {
     const dir = await fresh();
     const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, options: { mainChat: 'tripwires', logFile: '', casebookFile: '' } });
     await x.sessionStart(); await x.mainStep('medium');
     x.$.ui.log = () => { throw new Error('screen offline'); };
-    if (level === 'error') vi.spyOn(Controller.prototype, 'onButton').mockImplementation(() => { throw new Error(cause); });
+    if (event === 'answer-tool-failed') vi.spyOn(Controller.prototype, 'onButton').mockImplementation(() => { throw new Error(cause); });
     else x.$.state.get = async () => { throw new Error(cause); };
-    await expect(level === 'error' ? x.tool(undefined, 'mcp__effort-live-control__effort_up', {}) : x.step('unknown', 'medium')).rejects.toThrow('screen offline');
+    await expect(event === 'answer-tool-failed' ? x.tool(undefined, 'mcp__effort-live-control__effort_up', {}) : x.step('unknown', 'medium')).rejects.toThrow('screen offline');
     await x.sessionEnd();
     expect(await readRows(join(dir, 'effort-live-control'), file)).toContainEqual(expect.objectContaining({
       plugin: 'effort-live-control', level, event, where: `hooks/effort-live-control.ts#${component}`, session: 'sess1', msg: expect.stringContaining(cause),
@@ -1784,7 +1820,7 @@ suite('plugin log adapter', () => {
   });
 
   it('a failing plugin-log write also reaches the decision log, once per failing streak', async () => {
-    // The invalid floor's option-error warning is the level-log write that fails.
+    // The invalid floor's option-error is an error: the requested setting cannot apply.
     const x = engine(undefined, { slowWrite: true, env: { PLUGIN_LOG_DIR: '/fixture-logs' }, options: { floor: 'invalid', logFile: '/fixture-home/t/elc.jsonl' }, run: async () => ({ exitCode: 1, stdout: '', stderr: 'chmod: --: No such file or directory' }) });
     await x.sessionStart(); await x.sessionEnd();
     // No tick after session.end: the row the final flush queues is on disk when the session ends.
@@ -1821,7 +1857,7 @@ suite('plugin log adapter', () => {
     x.$.env.get = async (key) => { if (key === name) throw undefined; return env[key]; };
     await x.sessionStart(); await x.sessionEnd();
     const target = name === 'HOME' ? join(dir, 'levels/effort-live-control') : join(dir, '.local/state/effort-live-control/logs');
-    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: name === 'HOME' ? 'home-missing' : 'plugin-log-dir-unreadable', msg: expect.stringContaining('failed: undefined') }));
+    expect(await readRows(target, name === 'HOME' ? 'errors.jsonl' : 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: name === 'HOME' ? 'home-missing' : 'plugin-log-dir-unreadable', msg: expect.stringContaining('failed: undefined') }));
   });
 
   it('logs unreadable pins, judge fallback and actual effort changes without decision packets', async () => {
@@ -1836,10 +1872,10 @@ suite('plugin log adapter', () => {
     x.judgeCalls[0]!.resolve({ isAnswered: false, reason: 'aborted' });
     await x.tick(); await x.sessionEnd();
     const target = join(dir, 'effort-live-control');
-    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: 'pin-unreadable', level: 'warning' }));
-    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: 'judge-failed', level: 'warning', where: 'src/control.ts#failed' }));
+    expect(await readRows(target, 'errors.jsonl')).toContainEqual(expect.objectContaining({ event: 'pin-unreadable', level: 'error' }));
+    expect(await readRows(target, 'errors.jsonl')).toContainEqual(expect.objectContaining({ event: 'judge-failed', level: 'error', where: 'src/control.ts#failed' }));
     expect(await readRows(target, 'info.jsonl')).toContainEqual(expect.objectContaining({ event: 'effort-steered', detail: { agent: 'main', from: 'medium', to: 'high' } }));
-    const text = JSON.stringify(await readRows(target, 'warnings.jsonl'));
+    const text = JSON.stringify(await readRows(target, 'errors.jsonl'));
     expect(text).not.toContain('private test body');
     expect(await x.mainStep('medium')).toBe('high'); await x.sessionEnd();
   });
