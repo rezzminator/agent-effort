@@ -4,6 +4,8 @@ Every release of effort-live-control (named agent-effort through 0.1.3). Version
 
 ## [Unreleased]
 
+## [0.3.6-dev.1] — 2026-10-17
+
 ### Added
 - `effort_auto`, a third button beside `effort_up` and `effort_down` (registered under the same `buttons` option): it hands the caller's effort back to the automatic rules at its home level — its launch level (definition effort or tag, else its first request's), or the main chat's turn home — held within its range; an open struggle then resolves to that level.
 

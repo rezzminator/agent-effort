@@ -5,7 +5,7 @@
 **Set each Claude Code sub-agent's reasoning effort per spawn with a tag, and let an orchestrator's effort follow its own trouble while it works.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.3.5-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.6--dev.1-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-694%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
