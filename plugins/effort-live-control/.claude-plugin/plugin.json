@@ -133,8 +133,8 @@
     },
     "buttons": {
       "type": "boolean",
-      "title": "buttons: give agents effort_up and effort_down tools",
-      "description": "On: every agent can call effort_up and effort_down; a live-controlled agent moves its own effort one step, any other is refused. Off: the tools are not registered.",
+      "title": "buttons: give agents effort_up, effort_down and effort_auto tools",
+      "description": "On: every agent can call effort_up, effort_down and effort_auto; a live-controlled agent moves its own effort one step and holds it there until effort_auto hands it back to the automatic rules at its home level; any other agent is refused, the main chat with the name of its own effort control. Off: the tools are not registered.",
       "default": true
     },
     "announce": {

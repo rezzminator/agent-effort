@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { Controller } from '../plugins/effort-live-control/src/control.ts';
 import { register } from '../plugins/effort-live-control/hooks/effort-live-control.ts';
 import { BUNDLED_CASEBOOK } from '../plugins/effort-live-control/src/bundled-casebook.ts';
+import { MAIN_REFUSED } from '../plugins/effort-live-control/src/text.ts';
 
 // A stand-in engine: host state that outlives a re-register, a clock the test
 // fires, and the hooks the module registers, driven the way the engine drives them.
@@ -37,6 +38,8 @@ type Opts = {
   messages?: Array<{ role: 'user' | 'assistant'; text: string }>;
   /** Answers every model call at once (the prompt reader); without it a call waits in `judgeCalls`. */
   reply?: (request: any) => unknown;
+  /** What `$.tool.list()` answers; none listed by default. */
+  toolList?: () => Promise<Array<{ name: string; description: string; mcp: boolean }>>;
 };
 
 function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
@@ -92,6 +95,7 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
     session: { cwd: async () => '/proj', id: async () => 'sess1', model: async () => opts.mainModel ?? 'claude-opus-5-5', messages: async () => opts.messages ?? [] },
     tool: {
       register: async (spec: any) => (registered.push(spec), { tool: `mcp__effort-live-control__${spec.name}` }),
+      list: opts.toolList ?? (async () => []),
     },
     model: {
       complete: (request: any) => (opts.reply ? Promise.resolve(opts.reply(request)) : new Promise<any>((resolve, reject) => judgeCalls.push({ request, resolve, reject }))),
@@ -166,9 +170,9 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
   const complete = (agentId: string, answer = '') => hooks.get('turn.complete')!($, { agentId, answer }, async () => ({ text: '' }));
 
   /** One tool call of an agent; `result` is what the tool answers when next is called. */
-  async function tool(agentId: string | undefined, name: string, input: Record<string, unknown>, result: Record<string, unknown> = { result: {}, text: '' }) {
+  async function tool(agentId: string | undefined, name: string, input: Record<string, unknown>, result: Record<string, unknown> = { result: {}, text: '' }, signal = new AbortController().signal) {
     let called = false;
-    const out = await hooks.get('tool.call')!($, { tool: name, tool_use_id: 'u', agentId, ...input }, async () => ((called = true), result));
+    const out = await hooks.get('tool.call')!($, { tool: name, tool_use_id: 'u', agentId, ...input }, Object.assign(async () => ((called = true), result), { signal }));
     return { out, called };
   }
 
@@ -1089,14 +1093,16 @@ suite('struggle decay', () => {
 suite('buttons', () => {
   const UP = 'mcp__effort-live-control__effort_up';
   const DOWN = 'mcp__effort-live-control__effort_down';
+  const AUTO = 'mcp__effort-live-control__effort_auto';
 
-  it('R-12: session.start registers effort_up and effort_down with no parameters and the spec descriptions', async () => {
+  it('R-12: session.start registers effort_up, effort_down and effort_auto with no parameters and the spec descriptions', async () => {
     const x = engine();
     await x.sessionStart();
-    expect(x.registered.map((spec) => spec.name)).toEqual(['effort_up', 'effort_down']);
-    expect(x.registered[0]).toMatchObject({ inputSchema: { type: 'object', properties: {} } });
+    expect(x.registered.map((spec) => spec.name)).toEqual(['effort_up', 'effort_down', 'effort_auto']);
+    for (const spec of x.registered) expect(spec).toMatchObject({ inputSchema: { type: 'object', properties: {} } });
     expect(x.registered[0].description.startsWith('Raise your own reasoning effort one step for your next replies.')).toBe(true);
     expect(x.registered[1].description.startsWith('Lower your own reasoning effort one step for your next replies.')).toBe(true);
+    expect(x.registered[2].description.startsWith('Hand your reasoning effort back to the automatic rules')).toBe(true);
   });
 
   it('R-12: buttons off registers nothing', async () => {
@@ -1110,24 +1116,112 @@ suite('buttons', () => {
     await x.sessionStart();
     const up = await x.tool('L1', UP, {});
     expect(up.called).toBe(false);
-    expect(up.out.result).toBe('Effort raised to high for your next replies (your range medium..xhigh).');
+    expect(up.out.result).toBe('Effort raised to high for your next replies (your range medium..xhigh); it holds until you call effort_auto.');
     expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
     const down = await x.tool('L1', DOWN, {});
-    expect(down.out.result).toBe('Effort lowered to medium for your next replies (your range medium..xhigh).');
+    expect(down.out.result).toBe('Effort lowered to medium for your next replies (your range medium..xhigh); it holds until you call effort_auto.');
     const again = await x.tool('L1', DOWN, {});
-    expect(again.out.result).toBe('Your effort is already medium, the floor of your range; nothing changed.');
+    expect(again.out.result).toBe('Your effort is already medium, the floor of your range; it holds there until you call effort_auto.');
     expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'button', agent: 'L1', direction: 'up', from: 'medium', to: 'high' }));
   });
 
-  it('R-12: the main chat and an unsteered agent are refused, and the refusal is logged', async () => {
+  it('R-12: an unsteered main chat and an unsteered agent are refused, each by its own text, and the refusal is logged', async () => {
     const x = engine();
     await x.sessionStart();
     const main = await x.tool(undefined, UP, {});
     expect(main.called).toBe(false);
-    expect(main.out.result).toBe("Not available here: this agent's effort is not live-controlled (its definition does not turn on effortControl). Nothing changed.");
-    await x.tool('stranger', DOWN, {});
+    expect(main.out.result).toBe('Not available here: these effort buttons do not steer the main chat, and no tool here sets its effort; the user sets it with /effort. Nothing changed.');
+    const stranger = await x.tool('stranger', DOWN, {});
+    expect(stranger.out.result).toBe("Not available here: this agent's effort is not live-controlled (its definition does not turn on effortControl). Nothing changed.");
+    expect((await x.tool('stranger', AUTO, {})).out.result).toContain('not live-controlled');
     const refused = (await x.rows()).filter((row) => row.event === 'button-refused');
-    expect(refused.map((row) => row.agent)).toEqual(['main', 'stranger']);
+    expect(refused.map((row) => [row.agent, row.direction])).toEqual([['main', 'up'], ['stranger', 'down'], ['stranger', 'auto']]);
+  });
+
+  it("main chat: unsteered, every button names the main chat's own listed set_effort tool, with a level or auto", async () => {
+    const toolList = async () => [
+      { name: 'Bash', description: 'Runs a command.', mcp: false },
+      { name: 'mcp__other__reset_effort_cache', description: 'Not it.', mcp: true },
+      { name: 'mcp__steerer__set_effort', description: 'Sets the effort.', mcp: true },
+    ];
+    const x = engine(new Map(), { toolList, options: { mainChat: 'off' } });
+    await x.sessionStart();
+    await x.mainStep('high');
+    for (const name of [UP, DOWN, AUTO]) {
+      const { out, called } = await x.tool(undefined, name, {});
+      expect(called).toBe(false);
+      expect(out.result).toBe('Not available here: these effort buttons do not steer the main chat. Your effort has its own control, mcp__steerer__set_effort: call it with a level, or auto. Nothing changed.');
+    }
+  });
+
+  it('main chat: a tool list that fails is reported with its cause, and the refusal names /effort', async () => {
+    const x = engine(new Map(), { toolList: async () => { throw new Error('list denied'); } });
+    await x.sessionStart();
+    const { out } = await x.tool(undefined, UP, {});
+    expect(out.result).toContain('the user sets it with /effort');
+    expect(x.logs).toContain("effort-live-control: listing the session's tools failed: list denied; the main chat's refusal names /effort");
+  });
+
+  it('main chat: a tool list that does not answer is waited for within a bound, then the refusal names /effort', async () => {
+    const x = engine(new Map(), { toolList: () => new Promise(() => {}) });
+    await x.sessionStart();
+    const pending = x.tool(undefined, UP, {});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    x.fireTimers();
+    const { out } = await pending;
+    expect(out.result).toContain('the user sets it with /effort');
+    expect(x.logs).toContain("effort-live-control: the session's tool list did not answer within 2000 ms; the main chat's refusal names /effort");
+  });
+
+  it('main chat: a wait for the tool list that throws at once still gets the /effort refusal', async () => {
+    const x = engine(new Map(), { toolList: () => new Promise(() => {}) });
+    x.$.clock.sleep = () => {
+      throw new Error('no clock');
+    };
+    await x.sessionStart();
+    const { out } = await x.tool(undefined, UP, {});
+    expect(out.result).toBe(MAIN_REFUSED(undefined));
+    expect(x.logs).toContain("effort-live-control: listing the session's tools failed: no clock; the main chat's refusal names /effort");
+  });
+
+  it('main chat: a press the engine abandons stops its wait for the tool list and logs no timeout', async () => {
+    const x = engine(new Map(), { toolList: () => new Promise(() => {}) });
+    await x.sessionStart();
+    const abandoned = new AbortController();
+    const pending = x.tool(undefined, UP, {}, undefined, abandoned.signal);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(x.timers).toHaveLength(1);
+    abandoned.abort();
+    x.fireTimers();
+    const { out } = await pending;
+    expect(out.result).toBe(MAIN_REFUSED(undefined));
+    expect(x.logs.filter((line) => line.includes('tool list'))).toEqual([]);
+  });
+
+  it("main chat: a press after a request that carried no effort level says the level waits for one", async () => {
+    const x = engine();
+    await x.sessionStart();
+    expect(await x.mainStep('medium')).toBe('medium');
+    expect(await x.mainStep(undefined)).toBeUndefined();
+    const { out } = await x.tool(undefined, UP, {});
+    expect(out.result).toBe('Effort raised to high for your next replies (your range medium..xhigh); it holds until you call effort_auto. Your current model, claude-opus-5-5, takes no effort level here: the level applies once a request carries one.');
+    expect(await x.mainStep('medium')).toBe('high');
+    expect((await x.tool(undefined, UP, {})).out.result).toBe('Effort raised to xhigh for your next replies (your range medium..xhigh); it holds until you call effort_auto.');
+  });
+
+  it('effort_auto: a steered agent goes back to its launch level, and its tripwires steer it again', async () => {
+    const { x, failTwice } = await withLead(LEAD, { judge: false });
+    await x.sessionStart();
+    await x.tool('L1', UP, {});
+    await failTwice();
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    const auto = await x.tool('L1', AUTO, {});
+    expect(auto.called).toBe(false);
+    expect(auto.out.result).toBe('Effort back to medium, your home level, for your next replies (your range medium..xhigh); the automatic rules steer it again.');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('medium');
+    await failTwice();
+    expect(await x.step('L1', 'low', undefined, OPUS)).not.toBe('medium');
+    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'auto', agent: 'L1', from: 'high', to: 'medium', held: true }));
   });
 
   it('R-15: a registration that fails is logged and the plugin goes on', async () => {
@@ -1137,6 +1231,7 @@ suite('buttons', () => {
     expect(x.logs.filter((line) => line.startsWith('effort-live-control: registering the effort_')).map((line) => line.slice(0, 55))).toEqual([
       'effort-live-control: registering the effort_up tool fai',
       'effort-live-control: registering the effort_down tool f',
+      'effort-live-control: registering the effort_auto tool f',
     ]);
   });
 });
@@ -1659,6 +1754,20 @@ suite('main chat: tripwires mid-turn', () => {
     expect((out as any).result).toContain('raised to high');
     expect(await x.mainStep('low')).toBe('high');
   });
+
+  it("main chat: a pressed level holds over the next turn's home until effort_auto, which goes to that turn's home", async () => {
+    const { x, script } = withReader();
+    script.next = () => say('0.90 0.05 0.05');
+    await x.sessionStart();
+    await x.prompt('go');
+    expect(await x.mainStep('low')).toBe('medium');
+    await x.tool(undefined, 'mcp__effort-live-control__effort_up', {});
+    await x.prompt('next');
+    expect(await x.mainStep('low', 't2')).toBe('high');
+    const { out } = await x.tool(undefined, 'mcp__effort-live-control__effort_auto', {});
+    expect((out as any).result).toBe('Effort back to medium, your home level, for your next replies (your range medium..xhigh); the automatic rules steer it again.');
+    expect(await x.mainStep('low', 't2')).toBe('medium');
+  });
 });
 
 suite('main chat: the modes', () => {
@@ -1889,13 +1998,13 @@ suite('environment variables', () => {
     expect(x.files.has('/fixture-home/t/logs/env.sess1.jsonl')).toBe(true);
   });
 
-  it('EFFORT_LIVE_CONTROL_BUTTONS decides whether the two tools register, over the buttons option', async () => {
+  it('EFFORT_LIVE_CONTROL_BUTTONS decides whether the three tools register, over the buttons option', async () => {
     const off = engine(new Map(), { env: { EFFORT_LIVE_CONTROL_BUTTONS: '0' }, options: { buttons: true } });
     await off.sessionStart();
     expect(off.registered).toEqual([]);
     const on = engine(new Map(), { env: { EFFORT_LIVE_CONTROL_BUTTONS: ' ' }, options: { buttons: true } });
     await on.sessionStart();
-    expect(on.registered.map((spec) => spec.name)).toEqual(['effort_up', 'effort_down']);
+    expect(on.registered.map((spec) => spec.name)).toEqual(['effort_up', 'effort_down', 'effort_auto']);
     const unset = engine(new Map(), { options: { buttons: false } });
     await unset.sessionStart();
     expect(unset.registered).toEqual([]);

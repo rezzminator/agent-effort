@@ -523,34 +523,198 @@ describe('buttons', () => {
   it('R-12: up raises one step and, outside a struggle, moves the base with it', () => {
     const c = make();
     const out = c.onButton('up');
-    expect(out.text).toBe('Effort raised to high for your next replies (your range medium..xhigh).');
+    expect(out.text).toBe('Effort raised to high for your next replies (your range medium..xhigh); it holds until you call effort_auto.');
     expect(c.level).toBe('high');
     expect(c.base).toBe('high');
+    expect(c.held).toBe(true);
     expect(rows(out, 'button')).toEqual([{ event: 'button', direction: 'up', from: 'medium', to: 'high' }]);
   });
 
   it('R-12: down lowers one step', () => {
     const c = make({ home: 'high' });
-    expect(c.onButton('down').text).toBe('Effort lowered to medium for your next replies (your range medium..xhigh).');
+    expect(c.onButton('down').text).toBe('Effort lowered to medium for your next replies (your range medium..xhigh); it holds until you call effort_auto.');
   });
 
-  it('R-12: at a bound it answers the bound text and changes nothing', () => {
+  it('R-12: at a bound it answers the bound text, keeps the level and still holds it', () => {
     const c = make({ home: 'xhigh' });
-    expect(c.onButton('up').text).toBe('Your effort is already xhigh, the ceiling of your range; nothing changed.');
-    const d = make();
+    expect(c.onButton('up').text).toBe('Your effort is already xhigh, the ceiling of your range; it holds there until you call effort_auto.');
+    const d = make({ judge: false });
     const out = d.onButton('down');
-    expect(out.text).toBe('Your effort is already medium, the floor of your range; nothing changed.');
-    expect(rows(out, 'button')).toEqual([]);
+    expect(out.text).toBe('Your effort is already medium, the floor of your range; it holds there until you call effort_auto.');
+    expect(rows(out, 'button')).toEqual([{ event: 'button', direction: 'down', from: 'medium', to: 'medium' }]);
+    expect(d.held).toBe(true);
+    d.onTestRun(FAIL);
+    expect(d.level).toBe('medium');
   });
 
-  it('R-12: during a struggle the base stays, so resolution returns to the pre-struggle level', () => {
+  it('R-12: during a struggle the base stays, and the pressed level outlives the resolution', () => {
     const c = make();
     fail2(c);
     c.onButton('up');
     expect(c.level).toBe('high');
     expect(c.base).toBe('medium');
     c.onTestRun(PASS);
+    expect(c.struggleOpen).toBe(false);
+    expect(c.level).toBe('high');
+  });
+});
+
+describe('a press while the model is not steered', () => {
+  it('each button says the level waits while the requests carry no effort level, and the next request with one gets it', () => {
+    const c = make({ judge: false });
+    c.onRequestWithoutLevel('claude-opus-5-5');
+    const note = ' Your current model, claude-opus-5-5, takes no effort level here: the level applies once a request carries one.';
+    expect(c.onButton('up').text).toBe(`Effort raised to high for your next replies (your range medium..xhigh); it holds until you call effort_auto.${note}`);
+    expect(c.onAuto().text).toBe(`Effort back to medium, your home level, for your next replies (your range medium..xhigh); the automatic rules steer it again.${note}`);
+    c.onButton('up');
+    expect(c.onRequest('claude-opus-5-5', 'medium').send).toBe('high');
+    expect(c.onButton('down').text).toBe('Effort lowered to medium for your next replies (your range medium..xhigh); it holds until you call effort_auto.');
+  });
+
+  it('each button says the level waits for a steered model, and that model then gets it', () => {
+    const c = make({ judge: false, models: ['claude-opus'] });
+    expect(c.onRequest('claude-haiku-5-5', 'low').send).toBeUndefined();
+    const note = ' Your current model, claude-haiku-5-5, is not steered here: the level applies once a steered model answers.';
+    expect(c.onButton('up').text).toBe(`Effort raised to high for your next replies (your range medium..xhigh); it holds until you call effort_auto.${note}`);
+    expect(c.onAuto().text).toBe(`Effort back to medium, your home level, for your next replies (your range medium..xhigh); the automatic rules steer it again.${note}`);
+    expect(c.onButton('down').text).toBe(`Your effort is already medium, the floor of your range; it holds there until you call effort_auto.${note}`);
+    c.onButton('up');
+    expect(c.onRequest('claude-opus-5-5', 'low').send).toBe('high');
+    expect(c.onButton('up').text).toBe('Effort raised to xhigh for your next replies (your range medium..xhigh); it holds until you call effort_auto.');
+  });
+});
+
+describe('the hold: no automatic rule moves a pressed level', () => {
+  const MODEL = 'claude-opus-5-5';
+
+  it('hold: a tripwire counts its struggle and logs a held row, but raises nothing (judge off)', () => {
+    const c = make({ home: 'high', judge: false });
+    c.onButton('down');
+    const out = c.onTestRun(FAIL);
     expect(c.level).toBe('medium');
+    expect(c.struggleOpen).toBe(true);
+    expect(rows(out, 'mechanical')).toEqual([]);
+    expect(rows(out, 'tripwire')).toEqual([{ event: 'tripwire', tripwire: 'fail1', level: 'medium', held: true }]);
+    expect(c.end()).toMatchObject({ struggles: 1 });
+  });
+
+  it('hold: a tripwire asks no judge (judge on)', () => {
+    const c = make({ home: 'high' });
+    c.onButton('up');
+    const out = c.onTestRun(FAIL);
+    expect(judges(out)).toEqual([]);
+    expect(rows(out, 'tripwire')).toEqual([{ event: 'tripwire', tripwire: 'fail1', level: 'xhigh', held: true }]);
+    expect(c.end()).toMatchObject({ judgeCalls: 0 });
+  });
+
+  it('hold: a judge answer that arrives after the press changes nothing', () => {
+    const c = make();
+    fail2(c);
+    c.onButton('up');
+    const out = c.onJudgeAnswer(1, '90 - stuck', 1, USAGE);
+    expect(c.level).toBe('high');
+    expect(rows(out, 'judge')).toEqual([expect.objectContaining({ tripwire: 'fail2', p: 90, from: 'high', to: 'high', held: true })]);
+  });
+
+  it('hold: a judge failure after the press changes nothing', () => {
+    const c = make();
+    fail2(c);
+    c.onButton('up');
+    const out = c.onJudgeFailure(1, 'aborted');
+    expect(c.level).toBe('high');
+    expect(rows(out, 'judge-failed')).toEqual([expect.objectContaining({ reason: 'aborted', from: 'high', to: 'high', held: true })]);
+  });
+
+  it('hold: decay ends the struggle but leaves the level', () => {
+    const c = make({ judge: false, struggleDecay: 3 });
+    c.onTestRun(FAIL);
+    c.onButton('up');
+    const out = [c.onRequest(MODEL, undefined), c.onRequest(MODEL, undefined), c.onRequest(MODEL, undefined)];
+    expect(out.flatMap((o) => rows(o, 'resolved'))).toEqual([{ event: 'resolved', from: 'xhigh', to: 'xhigh', requests: 3, why: 'decay', held: true }]);
+    expect(c.struggleOpen).toBe(false);
+    expect(c.onRequest(MODEL, undefined).send).toBe('xhigh');
+  });
+
+  it('hold: resolution ends the struggle but leaves the level, and announces nothing', () => {
+    const c = make({ judge: false });
+    c.onTestRun(FAIL);
+    c.takeAnnouncement();
+    c.onButton('up');
+    const out = c.onTestRun(PASS);
+    expect(rows(out, 'resolved')).toEqual([{ event: 'resolved', from: 'xhigh', to: 'xhigh', requests: 0, why: 'resolved', held: true }]);
+    expect(c.level).toBe('xhigh');
+    expect(c.takeAnnouncement()).toBeUndefined();
+  });
+
+  it('hold: the landing step leaves the level', () => {
+    const c = make({ home: 'high', landing: ['lander'] });
+    c.onButton('up');
+    const out = c.onSpawn({ childId: 'c1', type: 'lander' });
+    expect(c.level).toBe('xhigh');
+    expect(rows(out, 'landing')).toEqual([{ event: 'landing', from: 'xhigh', to: 'xhigh', held: true }]);
+  });
+
+  it("hold: a new main-chat turn's home leaves the level but becomes the home effort_auto returns to", () => {
+    const c = make({ judge: false });
+    c.onButton('up');
+    c.setHome('xhigh');
+    expect(c.level).toBe('high');
+    c.setHome('medium');
+    expect(c.onRequest(MODEL, undefined).send).toBe('high');
+    c.setHome('xhigh');
+    c.onAuto();
+    expect(c.level).toBe('xhigh');
+  });
+});
+
+describe('effort_auto', () => {
+  it('effort_auto: back to the home level, the hold cleared, and the rules steer again', () => {
+    const c = make({ home: 'high', judge: false });
+    c.onButton('up');
+    const out = c.onAuto();
+    expect(out.text).toBe('Effort back to high, your home level, for your next replies (your range medium..xhigh); the automatic rules steer it again.');
+    expect(rows(out, 'auto')).toEqual([{ event: 'auto', from: 'xhigh', to: 'high', held: true }]);
+    expect(c.level).toBe('high');
+    expect(c.base).toBe('high');
+    expect(c.held).toBe(false);
+    c.onTestRun(FAIL);
+    expect(c.level).toBe('xhigh');
+  });
+
+  it('effort_auto: the home is held within the range', () => {
+    const low = make({ home: 'low' });
+    low.onButton('up');
+    low.onAuto();
+    expect(low.level).toBe('medium');
+    const max = make({ home: 'max' });
+    max.onButton('down');
+    max.onAuto();
+    expect(max.level).toBe('xhigh');
+  });
+
+  it('effort_auto: at home already it says so and still clears the hold', () => {
+    const c = make({ home: 'high', judge: false });
+    c.onButton('up');
+    c.onButton('down');
+    const out = c.onAuto();
+    expect(out.text).toBe('Your effort is already high, your home level; the automatic rules steer it again.');
+    expect(c.held).toBe(false);
+    c.onTestRun(FAIL);
+    expect(c.level).toBe('xhigh');
+  });
+
+  it("effort_auto: an open struggle stays open and resolves to the home level, not to its own pre level", () => {
+    const c = make({ home: 'high', judge: false, landing: ['lander'] });
+    c.onTestRun(FAIL);
+    c.onSpawn({ childId: 'c1', type: 'lander' }); // the struggle would resolve one step below home
+    c.onButton('down');
+    c.onAuto();
+    expect(c.level).toBe('high');
+    expect(c.struggleOpen).toBe(true);
+    c.onTestRun(FAIL);
+    expect(c.level).toBe('xhigh');
+    c.onTestRun(PASS);
+    expect(c.level).toBe('high');
   });
 });
 
@@ -579,6 +743,21 @@ describe('announcements', () => {
     c.onTestRun(FAIL);
     c.onTestRun(PASS);
     expect(c.takeAnnouncement()).toBe('effort-live-control: your reasoning effort is now medium — the trouble is resolved, back to medium.');
+  });
+
+  it('a press drops an undelivered line: its own result is the last word on the level (a step, a bound, effort_auto)', () => {
+    const presses: Array<[string, Partial<Setup>, (c: Controller) => unknown]> = [
+      ['effort_up', {}, (c) => c.onButton('up')],
+      ['effort_up at the ceiling', { ceiling: 'high' }, (c) => c.onButton('up')],
+      ['effort_auto', {}, (c) => c.onAuto()],
+    ];
+    for (const [name, over, press] of presses) {
+      const c = make({ judge: false, ...over });
+      c.onTestRun(FAIL);
+      expect(c.level, name).toBe('high');
+      press(c);
+      expect(c.takeAnnouncement(), name).toBeUndefined();
+    }
   });
 
   it('carries the judge\'s reason', () => {
